@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -57,10 +57,13 @@ const char* Representation::Mnemonic() const {
     case kTagged: return "t";
     case kDouble: return "d";
     case kInteger32: return "i";
-    default:
+    case kExternal: return "x";
+    case kNumRepresentations:
       UNREACHABLE();
       return NULL;
   }
+  UNREACHABLE();
+  return NULL;
 }
 
 
@@ -221,7 +224,7 @@ HType HType::TypeFromValue(Handle<Object> value) {
 }
 
 
-int HValue::LookupOperandIndex(int occurrence_index, HValue* op) const {
+int HValue::LookupOperandIndex(int occurrence_index, HValue* op) {
   for (int i = 0; i < OperandCount(); ++i) {
     if (OperandAt(i) == op) {
       if (occurrence_index == 0) return i;
@@ -237,7 +240,7 @@ bool HValue::IsDefinedAfter(HBasicBlock* other) const {
 }
 
 
-bool HValue::UsesMultipleTimes(HValue* op) const {
+bool HValue::UsesMultipleTimes(HValue* op) {
   bool seen = false;
   for (int i = 0; i < OperandCount(); ++i) {
     if (OperandAt(i) == op) {
@@ -249,10 +252,11 @@ bool HValue::UsesMultipleTimes(HValue* op) const {
 }
 
 
-bool HValue::Equals(HValue* other) const {
+bool HValue::Equals(HValue* other) {
   if (other->opcode() != opcode()) return false;
   if (!other->representation().Equals(representation())) return false;
   if (!other->type_.Equals(type_)) return false;
+  if (other->flags() != flags()) return false;
   if (OperandCount() != other->OperandCount()) return false;
   for (int i = 0; i < OperandCount(); ++i) {
     if (OperandAt(i)->id() != other->OperandAt(i)->id()) return false;
@@ -263,7 +267,7 @@ bool HValue::Equals(HValue* other) const {
 }
 
 
-intptr_t HValue::Hashcode() const {
+intptr_t HValue::Hashcode() {
   intptr_t result = opcode();
   int count = OperandCount();
   for (int i = 0; i < count; ++i) {
@@ -410,7 +414,7 @@ void HValue::ComputeInitialRange() {
 }
 
 
-void HInstruction::PrintTo(StringStream* stream) const {
+void HInstruction::PrintTo(StringStream* stream) {
   stream->Add("%s", Mnemonic());
   if (HasSideEffects()) stream->Add("*");
   stream->Add(" ");
@@ -437,9 +441,16 @@ void HInstruction::PrintTo(StringStream* stream) const {
 void HInstruction::Unlink() {
   ASSERT(IsLinked());
   ASSERT(!IsControlInstruction());  // Must never move control instructions.
+  ASSERT(!IsBlockEntry());  // Doesn't make sense to delete these.
+  ASSERT(previous_ != NULL);
+  previous_->next_ = next_;
+  if (next_ == NULL) {
+    ASSERT(block()->last() == this);
+    block()->set_last(previous_);
+  } else {
+    next_->previous_ = previous_;
+  }
   clear_block();
-  if (previous_ != NULL) previous_->next_ = next_;
-  if (next_ != NULL) next_->previous_ = previous_;
 }
 
 
@@ -490,7 +501,7 @@ void HInstruction::InsertAfter(HInstruction* previous) {
 
 
 #ifdef DEBUG
-void HInstruction::Verify() const {
+void HInstruction::Verify() {
   // Verify that input operands are defined before use.
   HBasicBlock* cur_block = block();
   for (int i = 0; i < OperandCount(); ++i) {
@@ -517,35 +528,73 @@ void HInstruction::Verify() const {
   if (HasSideEffects() && !IsOsrEntry()) {
     ASSERT(next()->IsSimulate());
   }
+
+  // Verify that instructions that can be eliminated by GVN have overridden
+  // HValue::DataEquals.  The default implementation is UNREACHABLE.  We
+  // don't actually care whether DataEquals returns true or false here.
+  if (CheckFlag(kUseGVN)) DataEquals(this);
 }
 #endif
 
 
-HCall::HCall(int count) : arguments_(Zone::NewArray<HValue*>(count), count) {
-  for (int i = 0; i < count; ++i) arguments_[i] = NULL;
-  set_representation(Representation::Tagged());
-  SetFlagMask(AllSideEffects());
+void HUnaryCall::PrintDataTo(StringStream* stream) {
+  value()->PrintNameTo(stream);
+  stream->Add(" ");
+  stream->Add("#%d", argument_count());
 }
 
 
-void HCall::PrintDataTo(StringStream* stream) const {
-  stream->Add("(");
-  for (int i = 0; i < arguments_.length(); ++i) {
-    if (i != 0) stream->Add(", ");
-    arguments_.at(i)->PrintNameTo(stream);
+void HBinaryCall::PrintDataTo(StringStream* stream) {
+  first()->PrintNameTo(stream);
+  stream->Add(" ");
+  second()->PrintNameTo(stream);
+  stream->Add(" ");
+  stream->Add("#%d", argument_count());
+}
+
+
+void HCallConstantFunction::PrintDataTo(StringStream* stream) {
+  if (IsApplyFunction()) {
+    stream->Add("optimized apply ");
+  } else {
+    stream->Add("%o ", function()->shared()->DebugName());
   }
-  stream->Add(")");
+  stream->Add("#%d", argument_count());
 }
 
 
-void HClassOfTest::PrintDataTo(StringStream* stream) const {
+void HCallNamed::PrintDataTo(StringStream* stream) {
+  stream->Add("%o ", *name());
+  HUnaryCall::PrintDataTo(stream);
+}
+
+
+void HCallGlobal::PrintDataTo(StringStream* stream) {
+  stream->Add("%o ", *name());
+  HUnaryCall::PrintDataTo(stream);
+}
+
+
+void HCallKnownGlobal::PrintDataTo(StringStream* stream) {
+  stream->Add("o ", target()->shared()->DebugName());
+  stream->Add("#%d", argument_count());
+}
+
+
+void HCallRuntime::PrintDataTo(StringStream* stream) {
+  stream->Add("%o ", *name());
+  stream->Add("#%d", argument_count());
+}
+
+
+void HClassOfTest::PrintDataTo(StringStream* stream) {
   stream->Add("class_of_test(");
-  value()->PrintTo(stream);
+  value()->PrintNameTo(stream);
   stream->Add(", \"%o\")", *class_name());
 }
 
 
-void HAccessArgumentsAt::PrintDataTo(StringStream* stream) const {
+void HAccessArgumentsAt::PrintDataTo(StringStream* stream) {
   arguments()->PrintNameTo(stream);
   stream->Add("[");
   index()->PrintNameTo(stream);
@@ -554,43 +603,29 @@ void HAccessArgumentsAt::PrintDataTo(StringStream* stream) const {
 }
 
 
-void HCall::SetArgumentAt(int index, HPushArgument* push_argument) {
-  push_argument->set_argument_index(index);
-  SetOperandAt(index, push_argument);
-}
-
-
-void HCallConstantFunction::PrintDataTo(StringStream* stream) const {
-  if (IsApplyFunction()) {
-    stream->Add("SPECIAL function: apply");
-  } else {
-    stream->Add("%s", *(function()->shared()->DebugName()->ToCString()));
+void HControlInstruction::PrintDataTo(StringStream* stream) {
+  if (FirstSuccessor() != NULL) {
+    int first_id = FirstSuccessor()->block_id();
+    if (SecondSuccessor() == NULL) {
+      stream->Add(" B%d", first_id);
+    } else {
+      int second_id = SecondSuccessor()->block_id();
+      stream->Add(" goto (B%d, B%d)", first_id, second_id);
+    }
   }
-  HCall::PrintDataTo(stream);
 }
 
 
-void HBranch::PrintDataTo(StringStream* stream) const {
-  int first_id = FirstSuccessor()->block_id();
-  int second_id = SecondSuccessor()->block_id();
-  stream->Add("on ");
+void HUnaryControlInstruction::PrintDataTo(StringStream* stream) {
   value()->PrintNameTo(stream);
-  stream->Add(" (B%d, B%d)", first_id, second_id);
+  HControlInstruction::PrintDataTo(stream);
 }
 
 
-void HGoto::PrintDataTo(StringStream* stream) const {
-  stream->Add("B%d", FirstSuccessor()->block_id());
-}
-
-
-void HReturn::PrintDataTo(StringStream* stream) const {
+void HCompareMap::PrintDataTo(StringStream* stream) {
   value()->PrintNameTo(stream);
-}
-
-
-void HThrow::PrintDataTo(StringStream* stream) const {
-  value()->PrintNameTo(stream);
+  stream->Add(" (%p)", *map());
+  HControlInstruction::PrintDataTo(stream);
 }
 
 
@@ -615,19 +650,19 @@ const char* HUnaryMathOperation::OpName() const {
 }
 
 
-void HUnaryMathOperation::PrintDataTo(StringStream* stream) const {
+void HUnaryMathOperation::PrintDataTo(StringStream* stream) {
   const char* name = OpName();
   stream->Add("%s ", name);
   value()->PrintNameTo(stream);
 }
 
 
-void HUnaryOperation::PrintDataTo(StringStream* stream) const {
+void HUnaryOperation::PrintDataTo(StringStream* stream) {
   value()->PrintNameTo(stream);
 }
 
 
-void HHasInstanceType::PrintDataTo(StringStream* stream) const {
+void HHasInstanceType::PrintDataTo(StringStream* stream) {
   value()->PrintNameTo(stream);
   switch (from_) {
     case FIRST_JS_OBJECT_TYPE:
@@ -648,22 +683,14 @@ void HHasInstanceType::PrintDataTo(StringStream* stream) const {
 }
 
 
-void HTypeofIs::PrintDataTo(StringStream* stream) const {
+void HTypeofIs::PrintDataTo(StringStream* stream) {
   value()->PrintNameTo(stream);
   stream->Add(" == ");
   stream->Add(type_literal_->ToAsciiVector());
 }
 
 
-void HPushArgument::PrintDataTo(StringStream* stream) const {
-  HUnaryOperation::PrintDataTo(stream);
-  if (argument_index() != -1) {
-    stream->Add(" [%d]", argument_index_);
-  }
-}
-
-
-void HChange::PrintDataTo(StringStream* stream) const {
+void HChange::PrintDataTo(StringStream* stream) {
   HUnaryOperation::PrintDataTo(stream);
   stream->Add(" %s to %s", from_.Mnemonic(), to_.Mnemonic());
 
@@ -679,54 +706,31 @@ HCheckInstanceType* HCheckInstanceType::NewIsJSObjectOrJSFunction(
 }
 
 
-void HCheckMap::PrintDataTo(StringStream* stream) const {
+void HCheckMap::PrintDataTo(StringStream* stream) {
   value()->PrintNameTo(stream);
   stream->Add(" %p", *map());
 }
 
 
-void HCheckFunction::PrintDataTo(StringStream* stream) const {
+void HCheckFunction::PrintDataTo(StringStream* stream) {
   value()->PrintNameTo(stream);
   stream->Add(" %p", *target());
 }
 
 
-void HCallKeyed::PrintDataTo(StringStream* stream) const {
-  stream->Add("[");
-  key()->PrintNameTo(stream);
-  stream->Add("](");
-  for (int i = 1; i < arguments_.length(); ++i) {
-    if (i != 1) stream->Add(", ");
-    arguments_.at(i)->PrintNameTo(stream);
-  }
-  stream->Add(")");
+void HCallStub::PrintDataTo(StringStream* stream) {
+  stream->Add("%s ",
+              CodeStub::MajorName(major_key_, false));
+  HUnaryCall::PrintDataTo(stream);
 }
 
 
-void HCallNamed::PrintDataTo(StringStream* stream) const {
-  SmartPointer<char> name_string = name()->ToCString();
-  stream->Add("%s ", *name_string);
-  HCall::PrintDataTo(stream);
-}
-
-
-void HCallGlobal::PrintDataTo(StringStream* stream) const {
-  SmartPointer<char> name_string = name()->ToCString();
-  stream->Add("%s ", *name_string);
-  HCall::PrintDataTo(stream);
-}
-
-
-void HCallRuntime::PrintDataTo(StringStream* stream) const {
-  SmartPointer<char> name_string = name()->ToCString();
-  stream->Add("%s ", *name_string);
-  HCall::PrintDataTo(stream);
-}
-
-void HCallStub::PrintDataTo(StringStream* stream) const {
-  stream->Add("%s(%d)",
-              CodeStub::MajorName(major_key_, false),
-              argument_count_);
+void HInstanceOf::PrintDataTo(StringStream* stream) {
+  left()->PrintNameTo(stream);
+  stream->Add(" ");
+  right()->PrintNameTo(stream);
+  stream->Add(" ");
+  context()->PrintNameTo(stream);
 }
 
 
@@ -866,7 +870,7 @@ Range* HMod::InferRange() {
 }
 
 
-void HPhi::PrintTo(StringStream* stream) const {
+void HPhi::PrintTo(StringStream* stream) {
   stream->Add("[");
   for (int i = 0; i < OperandCount(); ++i) {
     HValue* value = OperandAt(i);
@@ -892,18 +896,7 @@ void HPhi::AddInput(HValue* value) {
 }
 
 
-bool HPhi::HasReceiverOperand() {
-  for (int i = 0; i < OperandCount(); i++) {
-    if (OperandAt(i)->IsParameter() &&
-        HParameter::cast(OperandAt(i))->index() == 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
-
-HValue* HPhi::GetRedundantReplacement() const {
+HValue* HPhi::GetRedundantReplacement() {
   HValue* candidate = NULL;
   int count = OperandCount();
   int position = 0;
@@ -955,7 +948,7 @@ void HPhi::AddIndirectUsesTo(int* dest) {
 }
 
 
-void HSimulate::PrintDataTo(StringStream* stream) const {
+void HSimulate::PrintDataTo(StringStream* stream) {
   stream->Add("id=%d ", ast_id());
   if (pop_count_ > 0) stream->Add("pop %d", pop_count_);
   if (values_.length() > 0) {
@@ -972,7 +965,7 @@ void HSimulate::PrintDataTo(StringStream* stream) const {
 }
 
 
-void HEnterInlined::PrintDataTo(StringStream* stream) const {
+void HEnterInlined::PrintDataTo(StringStream* stream) {
   SmartPointer<char> name = function()->debug_name()->ToCString();
   stream->Add("%s, id=%d", *name, function()->id());
 }
@@ -989,7 +982,8 @@ HConstant::HConstant(Handle<Object> handle, Representation r)
   SetFlag(kUseGVN);
   if (handle_->IsNumber()) {
     double n = handle_->Number();
-    has_int32_value_ = static_cast<double>(static_cast<int32_t>(n)) == n;
+    double roundtrip_value = static_cast<double>(static_cast<int32_t>(n));
+    has_int32_value_ = BitCast<int64_t>(roundtrip_value) == BitCast<int64_t>(n);
     if (has_int32_value_) int32_value_ = static_cast<int32_t>(n);
     double_value_ = n;
     has_double_value_ = true;
@@ -1012,7 +1006,7 @@ HConstant* HConstant::CopyToTruncatedInt32() const {
 }
 
 
-void HConstant::PrintDataTo(StringStream* stream) const {
+void HConstant::PrintDataTo(StringStream* stream) {
   handle()->ShortPrint(stream);
 }
 
@@ -1022,7 +1016,7 @@ bool HArrayLiteral::IsCopyOnWrite() const {
 }
 
 
-void HBinaryOperation::PrintDataTo(StringStream* stream) const {
+void HBinaryOperation::PrintDataTo(StringStream* stream) {
   left()->PrintNameTo(stream);
   stream->Add(" ");
   right()->PrintNameTo(stream);
@@ -1106,7 +1100,7 @@ Range* HShl::InferRange() {
 
 
 
-void HCompare::PrintDataTo(StringStream* stream) const {
+void HCompare::PrintDataTo(StringStream* stream) {
   stream->Add(Token::Name(token()));
   stream->Add(" ");
   HBinaryOperation::PrintDataTo(stream);
@@ -1116,27 +1110,27 @@ void HCompare::PrintDataTo(StringStream* stream) const {
 void HCompare::SetInputRepresentation(Representation r) {
   input_representation_ = r;
   if (r.IsTagged()) {
-    SetFlagMask(AllSideEffects());
+    SetAllSideEffects();
     ClearFlag(kUseGVN);
   } else {
-    ClearFlagMask(AllSideEffects());
+    ClearAllSideEffects();
     SetFlag(kUseGVN);
   }
 }
 
 
-void HParameter::PrintDataTo(StringStream* stream) const {
+void HParameter::PrintDataTo(StringStream* stream) {
   stream->Add("%u", index());
 }
 
 
-void HLoadNamedField::PrintDataTo(StringStream* stream) const {
+void HLoadNamedField::PrintDataTo(StringStream* stream) {
   object()->PrintNameTo(stream);
   stream->Add(" @%d%s", offset(), is_in_object() ? "[in-object]" : "");
 }
 
 
-void HLoadKeyed::PrintDataTo(StringStream* stream) const {
+void HLoadKeyedFastElement::PrintDataTo(StringStream* stream) {
   object()->PrintNameTo(stream);
   stream->Add("[");
   key()->PrintNameTo(stream);
@@ -1144,7 +1138,23 @@ void HLoadKeyed::PrintDataTo(StringStream* stream) const {
 }
 
 
-void HStoreNamed::PrintDataTo(StringStream* stream) const {
+void HLoadKeyedGeneric::PrintDataTo(StringStream* stream) {
+  object()->PrintNameTo(stream);
+  stream->Add("[");
+  key()->PrintNameTo(stream);
+  stream->Add("]");
+}
+
+
+void HLoadPixelArrayElement::PrintDataTo(StringStream* stream) {
+  external_pointer()->PrintNameTo(stream);
+  stream->Add("[");
+  key()->PrintNameTo(stream);
+  stream->Add("]");
+}
+
+
+void HStoreNamedGeneric::PrintDataTo(StringStream* stream) {
   object()->PrintNameTo(stream);
   stream->Add(".");
   ASSERT(name()->IsString());
@@ -1154,15 +1164,20 @@ void HStoreNamed::PrintDataTo(StringStream* stream) const {
 }
 
 
-void HStoreNamedField::PrintDataTo(StringStream* stream) const {
-  HStoreNamed::PrintDataTo(stream);
+void HStoreNamedField::PrintDataTo(StringStream* stream) {
+  object()->PrintNameTo(stream);
+  stream->Add(".");
+  ASSERT(name()->IsString());
+  stream->Add(*String::cast(*name())->ToCString());
+  stream->Add(" = ");
+  value()->PrintNameTo(stream);
   if (!transition().is_null()) {
     stream->Add(" (transition map %p)", *transition());
   }
 }
 
 
-void HStoreKeyed::PrintDataTo(StringStream* stream) const {
+void HStoreKeyedFastElement::PrintDataTo(StringStream* stream) {
   object()->PrintNameTo(stream);
   stream->Add("[");
   key()->PrintNameTo(stream);
@@ -1171,14 +1186,45 @@ void HStoreKeyed::PrintDataTo(StringStream* stream) const {
 }
 
 
-void HLoadGlobal::PrintDataTo(StringStream* stream) const {
+void HStoreKeyedGeneric::PrintDataTo(StringStream* stream) {
+  object()->PrintNameTo(stream);
+  stream->Add("[");
+  key()->PrintNameTo(stream);
+  stream->Add("] = ");
+  value()->PrintNameTo(stream);
+}
+
+
+void HStorePixelArrayElement::PrintDataTo(StringStream* stream) {
+  external_pointer()->PrintNameTo(stream);
+  stream->Add("[");
+  key()->PrintNameTo(stream);
+  stream->Add("] = ");
+  value()->PrintNameTo(stream);
+}
+
+
+void HLoadGlobal::PrintDataTo(StringStream* stream) {
   stream->Add("[%p]", *cell());
   if (check_hole_value()) stream->Add(" (deleteable/read-only)");
 }
 
 
-void HStoreGlobal::PrintDataTo(StringStream* stream) const {
+void HStoreGlobal::PrintDataTo(StringStream* stream) {
   stream->Add("[%p] = ", *cell());
+  value()->PrintNameTo(stream);
+}
+
+
+void HLoadContextSlot::PrintDataTo(StringStream* stream) {
+  value()->PrintNameTo(stream);
+  stream->Add("[%d]", slot_index());
+}
+
+
+void HStoreContextSlot::PrintDataTo(StringStream* stream) {
+  context()->PrintNameTo(stream);
+  stream->Add("[%d] = ", slot_index());
   value()->PrintNameTo(stream);
 }
 
@@ -1186,33 +1232,33 @@ void HStoreGlobal::PrintDataTo(StringStream* stream) const {
 // Implementation of type inference and type conversions. Calculates
 // the inferred type of this instruction based on the input operands.
 
-HType HValue::CalculateInferredType() const {
+HType HValue::CalculateInferredType() {
   return type_;
 }
 
 
-HType HCheckMap::CalculateInferredType() const {
+HType HCheckMap::CalculateInferredType() {
   return value()->type();
 }
 
 
-HType HCheckFunction::CalculateInferredType() const {
+HType HCheckFunction::CalculateInferredType() {
   return value()->type();
 }
 
 
-HType HCheckNonSmi::CalculateInferredType() const {
+HType HCheckNonSmi::CalculateInferredType() {
   // TODO(kasperl): Is there any way to signal that this isn't a smi?
   return HType::Tagged();
 }
 
 
-HType HCheckSmi::CalculateInferredType() const {
+HType HCheckSmi::CalculateInferredType() {
   return HType::Smi();
 }
 
 
-HType HPhi::CalculateInferredType() const {
+HType HPhi::CalculateInferredType() {
   HType result = HType::Uninitialized();
   for (int i = 0; i < OperandCount(); ++i) {
     HType current = OperandAt(i)->type();
@@ -1222,72 +1268,77 @@ HType HPhi::CalculateInferredType() const {
 }
 
 
-HType HConstant::CalculateInferredType() const {
+HType HConstant::CalculateInferredType() {
   return constant_type_;
 }
 
 
-HType HCompare::CalculateInferredType() const {
+HType HCompare::CalculateInferredType() {
   return HType::Boolean();
 }
 
 
-HType HCompareJSObjectEq::CalculateInferredType() const {
+HType HCompareJSObjectEq::CalculateInferredType() {
   return HType::Boolean();
 }
 
 
-HType HUnaryPredicate::CalculateInferredType() const {
+HType HUnaryPredicate::CalculateInferredType() {
   return HType::Boolean();
 }
 
 
-HType HArithmeticBinaryOperation::CalculateInferredType() const {
+HType HBitwiseBinaryOperation::CalculateInferredType() {
   return HType::TaggedNumber();
 }
 
 
-HType HAdd::CalculateInferredType() const {
+HType HArithmeticBinaryOperation::CalculateInferredType() {
+  return HType::TaggedNumber();
+}
+
+
+HType HAdd::CalculateInferredType() {
   return HType::Tagged();
 }
 
 
-HType HBitAnd::CalculateInferredType() const {
+HType HBitAnd::CalculateInferredType() {
   return HType::TaggedNumber();
 }
 
 
-HType HBitXor::CalculateInferredType() const {
+HType HBitXor::CalculateInferredType() {
   return HType::TaggedNumber();
 }
 
 
-HType HBitOr::CalculateInferredType() const {
+HType HBitOr::CalculateInferredType() {
   return HType::TaggedNumber();
 }
 
 
-HType HBitNot::CalculateInferredType() const {
+HType HBitNot::CalculateInferredType() {
   return HType::TaggedNumber();
 }
 
 
-HType HUnaryMathOperation::CalculateInferredType() const {
+HType HUnaryMathOperation::CalculateInferredType() {
   return HType::TaggedNumber();
 }
 
 
-HType HShl::CalculateInferredType() const {
+HType HShl::CalculateInferredType() {
   return HType::TaggedNumber();
 }
 
 
-HType HShr::CalculateInferredType() const {
+HType HShr::CalculateInferredType() {
   return HType::TaggedNumber();
 }
 
 
-HType HSar::CalculateInferredType() const {
+HType HSar::CalculateInferredType() {
   return HType::TaggedNumber();
 }
 
@@ -1375,7 +1426,7 @@ HValue* HAdd::EnsureAndPropagateNotMinusZero(BitVector* visited) {
 // Node-specific verification code is only included in debug mode.
 #ifdef DEBUG
 
-void HPhi::Verify() const {
+void HPhi::Verify() {
   ASSERT(OperandCount() == block()->predecessors()->length());
   for (int i = 0; i < OperandCount(); ++i) {
     HValue* value = OperandAt(i);
@@ -1387,49 +1438,49 @@ void HPhi::Verify() const {
 }
 
 
-void HSimulate::Verify() const {
+void HSimulate::Verify() {
   HInstruction::Verify();
   ASSERT(HasAstId());
 }
 
 
-void HBoundsCheck::Verify() const {
+void HBoundsCheck::Verify() {
   HInstruction::Verify();
   ASSERT(HasNoUses());
 }
 
 
-void HCheckSmi::Verify() const {
+void HCheckSmi::Verify() {
   HInstruction::Verify();
   ASSERT(HasNoUses());
 }
 
 
-void HCheckNonSmi::Verify() const {
+void HCheckNonSmi::Verify() {
   HInstruction::Verify();
   ASSERT(HasNoUses());
 }
 
 
-void HCheckInstanceType::Verify() const {
+void HCheckInstanceType::Verify() {
   HInstruction::Verify();
   ASSERT(HasNoUses());
 }
 
 
-void HCheckMap::Verify() const {
+void HCheckMap::Verify() {
   HInstruction::Verify();
   ASSERT(HasNoUses());
 }
 
 
-void HCheckFunction::Verify() const {
+void HCheckFunction::Verify() {
   HInstruction::Verify();
   ASSERT(HasNoUses());
 }
 
 
-void HCheckPrototypeMaps::Verify() const {
+void HCheckPrototypeMaps::Verify() {
   HInstruction::Verify();
   ASSERT(HasNoUses());
 }

@@ -40,32 +40,21 @@ namespace internal {
 // TranscendentalCache runtime function.
 class TranscendentalCacheStub: public CodeStub {
  public:
-  explicit TranscendentalCacheStub(TranscendentalCache::Type type)
-      : type_(type) {}
+  enum ArgumentType {
+    TAGGED = 0,
+    UNTAGGED = 1 << TranscendentalCache::kTranscendentalTypeBits
+  };
+
+  explicit TranscendentalCacheStub(TranscendentalCache::Type type,
+                                   ArgumentType argument_type)
+      : type_(type), argument_type_(argument_type) {}
   void Generate(MacroAssembler* masm);
  private:
   TranscendentalCache::Type type_;
+  ArgumentType argument_type_;
 
   Major MajorKey() { return TranscendentalCache; }
-  int MinorKey() { return type_; }
-  Runtime::FunctionId RuntimeFunction();
-  void GenerateOperation(MacroAssembler* masm);
-};
-
-
-// Check the transcendental cache, or generate the result, using SSE2.
-// The argument and result will be in xmm1.
-// Only supports TranscendentalCache::LOG at this point.
-class TranscendentalCacheSSE2Stub: public CodeStub {
- public:
-  explicit TranscendentalCacheSSE2Stub(TranscendentalCache::Type type)
-      : type_(type) {}
-  void Generate(MacroAssembler* masm);
- private:
-  TranscendentalCache::Type type_;
-
-  Major MajorKey() { return TranscendentalCacheSSE2; }
-  int MinorKey() { return type_; }
+  int MinorKey() { return type_ | argument_type_; }
   Runtime::FunctionId RuntimeFunction();
   void GenerateOperation(MacroAssembler* masm);
 };
@@ -261,13 +250,6 @@ class TypeRecordingBinaryOpStub: public CodeStub {
         result_type_(result_type),
         name_(NULL) { }
 
-  // Generate code to call the stub with the supplied arguments. This will add
-  // code at the call site to prepare arguments either in registers or on the
-  // stack together with the actual call.
-  void GenerateCall(MacroAssembler* masm, Register left, Register right);
-  void GenerateCall(MacroAssembler* masm, Register left, Smi* right);
-  void GenerateCall(MacroAssembler* masm, Smi* left, Register right);
-
  private:
   enum SmiCodeGenerateHeapNumberResults {
     ALLOW_HEAPNUMBER_RESULTS,
@@ -326,15 +308,12 @@ class TypeRecordingBinaryOpStub: public CodeStub {
   void GenerateHeapNumberStub(MacroAssembler* masm);
   void GenerateStringStub(MacroAssembler* masm);
   void GenerateGenericStub(MacroAssembler* masm);
+  void GenerateAddStrings(MacroAssembler* masm);
 
   void GenerateHeapResultAllocation(MacroAssembler* masm, Label* alloc_failure);
   void GenerateRegisterArgsPush(MacroAssembler* masm);
   void GenerateTypeTransition(MacroAssembler* masm);
   void GenerateTypeTransitionWithSavedArgs(MacroAssembler* masm);
-
-  bool IsOperationCommutative() {
-    return (op_ == Token::ADD) || (op_ == Token::MUL);
-  }
 
   virtual int GetCodeKind() { return Code::TYPE_RECORDING_BINARY_OP_IC; }
 
@@ -510,6 +489,47 @@ class NumberToStringStub: public CodeStub {
 #endif
 };
 
+
+// Generate code to load an element from a pixel array. The receiver is assumed
+// to not be a smi and to have elements, the caller must guarantee this
+// precondition. If key is not a smi, then the generated code branches to
+// key_not_smi. Callers can specify NULL for key_not_smi to signal that a smi
+// check has already been performed on key so that the smi check is not
+// generated. If key is not a valid index within the bounds of the pixel array,
+// the generated code jumps to out_of_range. receiver, key and elements are
+// unchanged throughout the generated code sequence.
+void GenerateFastPixelArrayLoad(MacroAssembler* masm,
+                                Register receiver,
+                                Register key,
+                                Register elements,
+                                Register untagged_key,
+                                Register result,
+                                Label* not_pixel_array,
+                                Label* key_not_smi,
+                                Label* out_of_range);
+
+// Generate code to store an element into a pixel array, clamping values between
+// [0..255]. The receiver is assumed to not be a smi and to have elements, the
+// caller must guarantee this precondition. If key is not a smi, then the
+// generated code branches to key_not_smi. Callers can specify NULL for
+// key_not_smi to signal that a smi check has already been performed on key so
+// that the smi check is not generated. If the value is not a smi, the generated
+// code will branch to value_not_smi.  If the receiver doesn't have pixel array
+// elements, the generated code will branch to not_pixel_array, unless
+// not_pixel_array is NULL, in which case the caller must ensure that the
+// receiver has pixel array elements.  If key is not a valid index within the
+// bounds of the pixel array, the generated code jumps to out_of_range.
+void GenerateFastPixelArrayStore(MacroAssembler* masm,
+                                 Register receiver,
+                                 Register key,
+                                 Register value,
+                                 Register elements,
+                                 Register scratch1,
+                                 bool load_elements_from_receiver,
+                                 Label* key_not_smi,
+                                 Label* value_not_smi,
+                                 Label* not_pixel_array,
+                                 Label* out_of_range);
 
 } }  // namespace v8::internal
 

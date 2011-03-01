@@ -530,6 +530,24 @@ class Collector {
   }
 
 
+  // Add a contiguous block of elements and return a vector backed
+  // by the added block.
+  // A basic Collector will keep this vector valid as long as the Collector
+  // is alive.
+  inline Vector<T> AddBlock(Vector<const T> source) {
+    if (source.length() > current_chunk_.length() - index_) {
+      Grow(source.length());
+    }
+    T* position = current_chunk_.start() + index_;
+    index_ += source.length();
+    size_ += source.length();
+    for (int i = 0; i < source.length(); i++) {
+      position[i] = source[i];
+    }
+    return Vector<T>(position, source.length());
+  }
+
+
   // Write the contents of the collector into the provided vector.
   void WriteTo(Vector<T> destination) {
     ASSERT(size_ <= destination.length());
@@ -742,20 +760,32 @@ static inline int TenToThe(int exponent) {
 // you can use BitCast to cast one pointer type to another.  This confuses gcc
 // enough that it can no longer see that you have cast one pointer type to
 // another thus avoiding the warning.
+
+// We need different implementations of BitCast for pointer and non-pointer
+// values. We use partial specialization of auxiliary struct to work around
+// issues with template functions overloading.
+template <class Dest, class Source>
+struct BitCastHelper {
+  STATIC_ASSERT(sizeof(Dest) == sizeof(Source));
+
+  INLINE(static Dest cast(const Source& source)) {
+    Dest dest;
+    memcpy(&dest, &source, sizeof(dest));
+    return dest;
+  }
+};
+
+template <class Dest, class Source>
+struct BitCastHelper<Dest, Source*> {
+  INLINE(static Dest cast(Source* source)) {
+    return BitCastHelper<Dest, uintptr_t>::
+        cast(reinterpret_cast<uintptr_t>(source));
+  }
+};
+
 template <class Dest, class Source>
 inline Dest BitCast(const Source& source) {
-  // Compile time assertion: sizeof(Dest) == sizeof(Source)
-  // A compile error here means your Dest and Source have different sizes.
-  typedef char VerifySizesAreEqual[sizeof(Dest) == sizeof(Source) ? 1 : -1];
-
-  Dest dest;
-  memcpy(&dest, &source, sizeof(dest));
-  return dest;
-}
-
-template <class Dest, class Source>
-inline Dest BitCast(Source*& source) {
-  return BitCast<Dest>(reinterpret_cast<uintptr_t>(source));
+  return BitCastHelper<Dest, Source>::cast(source);
 }
 
 } }  // namespace v8::internal

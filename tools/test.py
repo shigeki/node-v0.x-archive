@@ -40,9 +40,10 @@ import sys
 import tempfile
 import time
 import threading
-import utils
 from Queue import Queue, Empty
 
+sys.path.append(dirname(__file__) + "/../deps/v8/tools");
+import utils
 
 VERBOSE = False
 
@@ -454,7 +455,6 @@ def RunProcess(context, timeout, args, **rest):
   popen_args = args
   prev_error_mode = SEM_INVALID_VALUE;
   if utils.IsWindows():
-    popen_args = '"' + subprocess.list2cmdline(args) + '"'
     if context.suppress_dialogs:
       # Try to change the error mode to avoid dialogs on fatal errors. Don't
       # touch any existing error mode flags by merging the existing error mode.
@@ -668,7 +668,7 @@ class Context(object):
       name = 'build/default/node'
 
     if utils.IsWindows() and not name.endswith('.exe'):
-      name = name + '.exe'
+      name = os.path.abspath(name + '.exe')
     return name
 
   def GetVmCommand(self, testcase, mode):

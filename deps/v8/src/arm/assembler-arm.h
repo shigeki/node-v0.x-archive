@@ -41,6 +41,7 @@
 #define V8_ARM_ASSEMBLER_ARM_H_
 #include <stdio.h>
 #include "assembler.h"
+#include "constants-arm.h"
 #include "serialize.h"
 
 namespace v8 {
@@ -66,13 +67,14 @@ namespace internal {
 // such that we use an enum in optimized mode, and the struct in debug
 // mode. This way we get the compile-time error checking in debug mode
 // and best performance in optimized code.
-//
+
 // Core register
 struct Register {
   static const int kNumRegisters = 16;
   static const int kNumAllocatableRegisters = 8;
 
   static int ToAllocationIndex(Register reg) {
+    ASSERT(reg.code() < kNumAllocatableRegisters);
     return reg.code();
   }
 
@@ -132,7 +134,7 @@ const Register r5  = {  5 };
 const Register r6  = {  6 };
 const Register r7  = {  7 };
 const Register r8  = {  8 };  // Used as context register.
-const Register r9  = {  9 };
+const Register r9  = {  9 };  // Used as lithium codegen scratch register.
 const Register r10 = { 10 };  // Used as roots register.
 const Register fp  = { 11 };
 const Register ip  = { 12 };
@@ -166,6 +168,9 @@ struct SwVfpRegister {
 struct DwVfpRegister {
   // d0 has been excluded from allocation. This is following ia32
   // where xmm0 is excluded. This should be revisited.
+  // Currently d0 is used as a scratch register.
+  // d1 has also been excluded from allocation to be used as a scratch
+  // register as well.
   static const int kNumRegisters = 16;
   static const int kNumAllocatableRegisters = 15;
 
@@ -296,11 +301,6 @@ const DwVfpRegister d13 = { 13 };
 const DwVfpRegister d14 = { 14 };
 const DwVfpRegister d15 = { 15 };
 
-// VFP FPSCR constants.
-static const uint32_t kVFPExceptionMask = 0xf;
-static const uint32_t kVFPRoundingModeMask = 3 << 22;
-static const uint32_t kVFPFlushToZeroMask = 1 << 24;
-static const uint32_t kVFPRoundToMinusInfinityBits = 2 << 22;
 
 // Coprocessor register
 struct CRegister {
@@ -361,149 +361,6 @@ enum Coprocessor {
 };
 
 
-// Condition field in instructions.
-enum Condition {
-  // any value < 0 is considered no_condition
-  no_condition  = -1,
-
-  eq =  0 << 28,  // Z set            equal.
-  ne =  1 << 28,  // Z clear          not equal.
-  nz =  1 << 28,  // Z clear          not zero.
-  cs =  2 << 28,  // C set            carry set.
-  hs =  2 << 28,  // C set            unsigned higher or same.
-  cc =  3 << 28,  // C clear          carry clear.
-  lo =  3 << 28,  // C clear          unsigned lower.
-  mi =  4 << 28,  // N set            negative.
-  pl =  5 << 28,  // N clear          positive or zero.
-  vs =  6 << 28,  // V set            overflow.
-  vc =  7 << 28,  // V clear          no overflow.
-  hi =  8 << 28,  // C set, Z clear   unsigned higher.
-  ls =  9 << 28,  // C clear or Z set unsigned lower or same.
-  ge = 10 << 28,  // N == V           greater or equal.
-  lt = 11 << 28,  // N != V           less than.
-  gt = 12 << 28,  // Z clear, N == V  greater than.
-  le = 13 << 28,  // Z set or N != V  less then or equal
-  al = 14 << 28   //                  always.
-};
-
-
-// Returns the equivalent of !cc.
-inline Condition NegateCondition(Condition cc) {
-  ASSERT(cc != al);
-  return static_cast<Condition>(cc ^ ne);
-}
-
-
-// Corresponds to transposing the operands of a comparison.
-inline Condition ReverseCondition(Condition cc) {
-  switch (cc) {
-    case lo:
-      return hi;
-    case hi:
-      return lo;
-    case hs:
-      return ls;
-    case ls:
-      return hs;
-    case lt:
-      return gt;
-    case gt:
-      return lt;
-    case ge:
-      return le;
-    case le:
-      return ge;
-    default:
-      return cc;
-  };
-}
-
-
-// Branch hints are not used on the ARM.  They are defined so that they can
-// appear in shared function signatures, but will be ignored in ARM
-// implementations.
-enum Hint { no_hint };
-
-// Hints are not used on the arm.  Negating is trivial.
-inline Hint NegateHint(Hint ignored) { return no_hint; }
-
-
-// -----------------------------------------------------------------------------
-// Addressing modes and instruction variants
-
-// Shifter operand shift operation
-enum ShiftOp {
-  LSL = 0 << 5,
-  LSR = 1 << 5,
-  ASR = 2 << 5,
-  ROR = 3 << 5,
-  RRX = -1
-};
-
-
-// Condition code updating mode
-enum SBit {
-  SetCC   = 1 << 20,  // set condition code
-  LeaveCC = 0 << 20   // leave condition code unchanged
-};
-
-
-// Status register selection
-enum SRegister {
-  CPSR = 0 << 22,
-  SPSR = 1 << 22
-};
-
-
-// Status register fields
-enum SRegisterField {
-  CPSR_c = CPSR | 1 << 16,
-  CPSR_x = CPSR | 1 << 17,
-  CPSR_s = CPSR | 1 << 18,
-  CPSR_f = CPSR | 1 << 19,
-  SPSR_c = SPSR | 1 << 16,
-  SPSR_x = SPSR | 1 << 17,
-  SPSR_s = SPSR | 1 << 18,
-  SPSR_f = SPSR | 1 << 19
-};
-
-// Status register field mask (or'ed SRegisterField enum values)
-typedef uint32_t SRegisterFieldMask;
-
-
-// Memory operand addressing mode
-enum AddrMode {
-  // bit encoding P U W
-  Offset       = (8|4|0) << 21,  // offset (without writeback to base)
-  PreIndex     = (8|4|1) << 21,  // pre-indexed addressing with writeback
-  PostIndex    = (0|4|0) << 21,  // post-indexed addressing with writeback
-  NegOffset    = (8|0|0) << 21,  // negative offset (without writeback to base)
-  NegPreIndex  = (8|0|1) << 21,  // negative pre-indexed with writeback
-  NegPostIndex = (0|0|0) << 21   // negative post-indexed with writeback
-};
-
-
-// Load/store multiple addressing mode
-enum BlockAddrMode {
-  // bit encoding P U W
-  da           = (0|0|0) << 21,  // decrement after
-  ia           = (0|4|0) << 21,  // increment after
-  db           = (8|0|0) << 21,  // decrement before
-  ib           = (8|4|0) << 21,  // increment before
-  da_w         = (0|0|1) << 21,  // decrement after with writeback to base
-  ia_w         = (0|4|1) << 21,  // increment after with writeback to base
-  db_w         = (8|0|1) << 21,  // decrement before with writeback to base
-  ib_w         = (8|4|1) << 21   // increment before with writeback to base
-};
-
-
-// Coprocessor load/store operand size
-enum LFlag {
-  Long  = 1 << 22,  // long load/store coprocessor
-  Short = 0 << 22   // short load/store coprocessor
-};
-
-
 // -----------------------------------------------------------------------------
 // Machine instruction Operands
 
@@ -530,7 +387,7 @@ class Operand BASE_EMBEDDED {
   // Return true if this is a register operand.
   INLINE(bool is_reg() const);
 
-  // Return true of this operand fits in one instruction so that no
+  // Return true if this operand fits in one instruction so that no
   // 2-instruction solution with a load into the ip register is necessary.
   bool is_single_instruction() const;
   bool must_use_constant_pool() const;
@@ -582,13 +439,17 @@ class MemOperand BASE_EMBEDDED {
       offset_ = offset;
   }
 
-  uint32_t offset() {
+  uint32_t offset() const {
       ASSERT(rm_.is(no_reg));
       return offset_;
   }
 
   Register rn() const { return rn_; }
   Register rm() const { return rm_; }
+
+  bool OffsetIsUint12Encodable() const {
+    return offset_ >= 0 ? is_uint12(offset_) : is_uint12(-offset_);
+  }
 
  private:
   Register rn_;  // base
@@ -647,9 +508,6 @@ class CpuFeatures : public AllStatic {
 };
 
 
-typedef int32_t Instr;
-
-
 extern const Instr kMovLrPc;
 extern const Instr kLdrPCMask;
 extern const Instr kLdrPCPattern;
@@ -669,14 +527,10 @@ extern const Instr kMovwLeaveCCFlip;
 extern const Instr kCmpCmnMask;
 extern const Instr kCmpCmnPattern;
 extern const Instr kCmpCmnFlip;
-
-extern const Instr kALUMask;
-extern const Instr kAddPattern;
-extern const Instr kSubPattern;
-extern const Instr kAndPattern;
-extern const Instr kBicPattern;
 extern const Instr kAddSubFlip;
 extern const Instr kAndBicFlip;
+
+
 
 class Assembler : public Malloced {
  public:
@@ -879,6 +733,7 @@ class Assembler : public Malloced {
   void cmp(Register src1, Register src2, Condition cond = al) {
     cmp(src1, Operand(src2), cond);
   }
+  void cmp_raw_immediate(Register src1, int raw_immediate, Condition cond = al);
 
   void cmn(Register src1, const Operand& src2, Condition cond = al);
 
@@ -990,7 +845,6 @@ class Assembler : public Malloced {
   void stm(BlockAddrMode am, Register base, RegList src, Condition cond = al);
 
   // Exception-generating instructions and debugging support
-  static const int kDefaultStopCode = -1;
   void stop(const char* msg,
             Condition cond = al,
             int32_t code = kDefaultStopCode);
@@ -1052,22 +906,34 @@ class Assembler : public Malloced {
 
   void vldr(const DwVfpRegister dst,
             const Register base,
-            int offset,  // Offset must be a multiple of 4.
+            int offset,
+            const Condition cond = al);
+  void vldr(const DwVfpRegister dst,
+            const MemOperand& src,
             const Condition cond = al);
 
   void vldr(const SwVfpRegister dst,
             const Register base,
-            int offset,  // Offset must be a multiple of 4.
+            int offset,
+            const Condition cond = al);
+  void vldr(const SwVfpRegister dst,
+            const MemOperand& src,
             const Condition cond = al);
 
   void vstr(const DwVfpRegister src,
             const Register base,
-            int offset,  // Offset must be a multiple of 4.
+            int offset,
+            const Condition cond = al);
+  void vstr(const DwVfpRegister src,
+            const MemOperand& dst,
             const Condition cond = al);
 
   void vstr(const SwVfpRegister src,
             const Register base,
-            int offset,  // Offset must be a multiple of 4.
+            int offset,
+            const Condition cond = al);
+  void vstr(const SwVfpRegister src,
+            const MemOperand& dst,
             const Condition cond = al);
 
   void vmov(const DwVfpRegister dst,
@@ -1093,39 +959,38 @@ class Assembler : public Malloced {
   void vmov(const Register dst,
             const SwVfpRegister src,
             const Condition cond = al);
-  enum ConversionMode {
-    FPSCRRounding = 0,
-    RoundToZero = 1
-  };
   void vcvt_f64_s32(const DwVfpRegister dst,
                     const SwVfpRegister src,
-                    ConversionMode mode = RoundToZero,
+                    VFPConversionMode mode = kDefaultRoundToZero,
                     const Condition cond = al);
   void vcvt_f32_s32(const SwVfpRegister dst,
                     const SwVfpRegister src,
-                    ConversionMode mode = RoundToZero,
+                    VFPConversionMode mode = kDefaultRoundToZero,
                     const Condition cond = al);
   void vcvt_f64_u32(const DwVfpRegister dst,
                     const SwVfpRegister src,
-                    ConversionMode mode = RoundToZero,
+                    VFPConversionMode mode = kDefaultRoundToZero,
                     const Condition cond = al);
   void vcvt_s32_f64(const SwVfpRegister dst,
                     const DwVfpRegister src,
-                    ConversionMode mode = RoundToZero,
+                    VFPConversionMode mode = kDefaultRoundToZero,
                     const Condition cond = al);
   void vcvt_u32_f64(const SwVfpRegister dst,
                     const DwVfpRegister src,
-                    ConversionMode mode = RoundToZero,
+                    VFPConversionMode mode = kDefaultRoundToZero,
                     const Condition cond = al);
   void vcvt_f64_f32(const DwVfpRegister dst,
                     const SwVfpRegister src,
-                    ConversionMode mode = RoundToZero,
+                    VFPConversionMode mode = kDefaultRoundToZero,
                     const Condition cond = al);
   void vcvt_f32_f64(const SwVfpRegister dst,
                     const DwVfpRegister src,
-                    ConversionMode mode = RoundToZero,
+                    VFPConversionMode mode = kDefaultRoundToZero,
                     const Condition cond = al);
 
+  void vabs(const DwVfpRegister dst,
+            const DwVfpRegister src,
+            const Condition cond = al);
   void vadd(const DwVfpRegister dst,
             const DwVfpRegister src1,
             const DwVfpRegister src2,
@@ -1144,11 +1009,9 @@ class Assembler : public Malloced {
             const Condition cond = al);
   void vcmp(const DwVfpRegister src1,
             const DwVfpRegister src2,
-            const SBit s = LeaveCC,
             const Condition cond = al);
   void vcmp(const DwVfpRegister src1,
             const double src2,
-            const SBit s = LeaveCC,
             const Condition cond = al);
   void vmrs(const Register dst,
             const Condition cond = al);
@@ -1231,8 +1094,10 @@ class Assembler : public Malloced {
   // Use --code-comments to enable.
   void RecordComment(const char* msg);
 
-  // Writes a single byte or word of data in the code stream.  Used for
-  // inline tables, e.g., jump-tables.
+  // Writes a single byte or word of data in the code stream.  Used
+  // for inline tables, e.g., jump-tables. The constant pool should be
+  // emitted before any use of db and dd to ensure that constant pools
+  // are not emitted as part of the tables generated.
   void db(uint8_t data);
   void dd(uint32_t data);
 
@@ -1251,6 +1116,7 @@ class Assembler : public Malloced {
   static void instr_at_put(byte* pc, Instr instr) {
     *reinterpret_cast<Instr*>(pc) = instr;
   }
+  static Condition GetCondition(Instr instr);
   static bool IsBranch(Instr instr);
   static int GetBranchOffset(Instr instr);
   static bool IsLdrRegisterImmediate(Instr instr);
@@ -1261,6 +1127,8 @@ class Assembler : public Malloced {
   static bool IsAddRegisterImmediate(Instr instr);
   static Instr SetAddRegisterImmediateOffset(Instr instr, int offset);
   static Register GetRd(Instr instr);
+  static Register GetRn(Instr instr);
+  static Register GetRm(Instr instr);
   static bool IsPush(Instr instr);
   static bool IsPop(Instr instr);
   static bool IsStrRegFpOffset(Instr instr);
@@ -1268,6 +1136,11 @@ class Assembler : public Malloced {
   static bool IsStrRegFpNegOffset(Instr instr);
   static bool IsLdrRegFpNegOffset(Instr instr);
   static bool IsLdrPcImmediateOffset(Instr instr);
+  static bool IsTstImmediate(Instr instr);
+  static bool IsCmpRegister(Instr instr);
+  static bool IsCmpImmediate(Instr instr);
+  static Register GetCmpImmediateRegister(Instr instr);
+  static int GetCmpImmediateRawImmediate(Instr instr);
   static bool IsNop(Instr instr, int type = NON_MARKING_NOP);
 
   // Check if is time to emit a constant pool for pending reloc info entries

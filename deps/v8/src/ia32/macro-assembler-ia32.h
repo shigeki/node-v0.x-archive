@@ -143,7 +143,11 @@ class MacroAssembler: public Assembler {
   // Push and pop the registers that can hold pointers.
   void PushSafepointRegisters() { pushad(); }
   void PopSafepointRegisters() { popad(); }
-  static int SafepointRegisterStackIndex(int reg_code);
+  // Store the value in register/immediate src in the safepoint
+  // register stack slot for register dst.
+  void StoreToSafepointRegisterSlot(Register dst, Register src);
+  void StoreToSafepointRegisterSlot(Register dst, Immediate src);
+  void LoadFromSafepointRegisterSlot(Register dst, Register src);
 
   // ---------------------------------------------------------------------------
   // JavaScript invokes
@@ -258,6 +262,17 @@ class MacroAssembler: public Assembler {
     j(not_carry, is_smi);
   }
 
+  // Jump the register contains a smi.
+  inline void JumpIfSmi(Register value, Label* smi_label) {
+    test(value, Immediate(kSmiTagMask));
+    j(zero, smi_label, not_taken);
+  }
+  // Jump if register contain a non-smi.
+  inline void JumpIfNotSmi(Register value, Label* not_smi_label) {
+    test(value, Immediate(kSmiTagMask));
+    j(not_zero, not_smi_label, not_taken);
+  }
+
   // Assumes input is a heap object.
   void JumpIfNotNumber(Register reg, TypeInfo info, Label* on_not_number);
 
@@ -292,6 +307,11 @@ class MacroAssembler: public Assembler {
 
   // Unlink the stack handler on top of the stack from the try handler chain.
   void PopTryHandler();
+
+  // Activate the top handler in the try hander chain.
+  void Throw(Register value);
+
+  void ThrowUncatchable(UncatchableExceptionType type, Register value);
 
   // ---------------------------------------------------------------------------
   // Inline caching support
@@ -386,22 +406,13 @@ class MacroAssembler: public Assembler {
                                Register scratch2,
                                Label* gc_required);
 
-  // All registers must be distinct.  Only current_string needs valid contents
-  // on entry.  All registers may be invalid on exit.  result_operand is
-  // unchanged, padding_chars is updated correctly.
-  // The top of new space must contain a sequential ascii string with
-  // padding_chars bytes free in its top word.  The sequential ascii string
-  // current_string is concatenated to it, allocating the necessary amount
-  // of new memory.
-  void AppendStringToTopOfNewSpace(
-      Register current_string,  // Tagged pointer to string to copy.
-      Register current_string_length,
-      Register result_pos,
-      Register scratch,
-      Register new_padding_chars,
-      Operand operand_result,
-      Operand operand_padding_chars,
-      Label* bailout);
+  // Copy memory, byte-by-byte, from source to destination.  Not optimized for
+  // long or aligned copies.
+  // The contents of index and scratch are destroyed.
+  void CopyBytes(Register source,
+                 Register destination,
+                 Register length,
+                 Register scratch);
 
   // ---------------------------------------------------------------------------
   // Support functions.
@@ -548,6 +559,10 @@ class MacroAssembler: public Assembler {
 
   void Ret();
 
+  // Return and drop arguments from stack, where the number of arguments
+  // may be bigger than 2^16 - 1.  Requires a scratch register.
+  void Ret(int bytes_dropped, Register scratch);
+
   // Emit code to discard a non-negative number of pointer-sized elements
   // from the stack, clobbering only the esp register.
   void Drop(int element_count);
@@ -656,6 +671,15 @@ class MacroAssembler: public Assembler {
   MUST_USE_RESULT MaybeObject* PopHandleScopeHelper(Register saved,
                                                     Register scratch,
                                                     bool gc_allowed);
+
+
+  // Compute memory operands for safepoint stack slots.
+  Operand SafepointRegisterSlot(Register reg);
+  static int SafepointRegisterStackIndex(int reg_code);
+
+  // Needs access to SafepointRegisterStackIndex for optimized frame
+  // traversal.
+  friend class OptimizedFrame;
 };
 
 

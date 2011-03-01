@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -29,7 +29,7 @@
 #define V8_ARM_LITHIUM_CODEGEN_ARM_H_
 
 #include "arm/lithium-arm.h"
-
+#include "arm/lithium-gap-resolver-arm.h"
 #include "deoptimizer.h"
 #include "safepoint-table.h"
 #include "scopes.h"
@@ -40,7 +40,6 @@ namespace internal {
 // Forward declarations.
 class LDeferredCode;
 class SafepointGenerator;
-
 
 class LCodeGen BASE_EMBEDDED {
  public:
@@ -57,9 +56,34 @@ class LCodeGen BASE_EMBEDDED {
         scope_(chunk->graph()->info()->scope()),
         status_(UNUSED),
         deferred_(8),
-        osr_pc_offset_(-1) {
+        osr_pc_offset_(-1),
+        resolver_(this) {
     PopulateDeoptimizationLiteralsWithInlinedFunctions();
   }
+
+
+  // Simple accessors.
+  MacroAssembler* masm() const { return masm_; }
+
+  // Support for converting LOperands to assembler types.
+  // LOperand must be a register.
+  Register ToRegister(LOperand* op) const;
+
+  // LOperand is loaded into scratch, unless already a register.
+  Register EmitLoadRegister(LOperand* op, Register scratch);
+
+  // LOperand must be a double register.
+  DoubleRegister ToDoubleRegister(LOperand* op) const;
+
+  // LOperand is loaded into dbl_scratch, unless already a double register.
+  DoubleRegister EmitLoadDoubleRegister(LOperand* op,
+                                        SwVfpRegister flt_scratch,
+                                        DoubleRegister dbl_scratch);
+  int ToInteger32(LConstantOperand* op) const;
+  Operand ToOperand(LOperand* op);
+  MemOperand ToMemOperand(LOperand* op) const;
+  // Returns a MemOperand pointing to the high word of a DoubleStackSlot.
+  MemOperand ToHighMemOperand(LOperand* op) const;
 
   // Try to generate code for the entire chunk, but it may fail if the
   // chunk contains constructs we cannot handle. Returns true if the
@@ -71,14 +95,23 @@ class LCodeGen BASE_EMBEDDED {
   void FinishCode(Handle<Code> code);
 
   // Deferred code support.
+  template<int T>
+  void DoDeferredBinaryOpStub(LTemplateInstruction<1, 2, T>* instr,
+                              Token::Value op);
   void DoDeferredNumberTagD(LNumberTagD* instr);
   void DoDeferredNumberTagI(LNumberTagI* instr);
   void DoDeferredTaggedToI(LTaggedToI* instr);
   void DoDeferredMathAbsTaggedHeapNumber(LUnaryMathOperation* instr);
   void DoDeferredStackCheck(LGoto* instr);
+  void DoDeferredStringCharCodeAt(LStringCharCodeAt* instr);
+  void DoDeferredLInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr,
+                                        Label* map_check);
 
   // Parallel move support.
   void DoParallelMove(LParallelMove* move);
+
+  // Emit frame translation commands for an environment.
+  void WriteTranslation(LEnvironment* environment, Translation* translation);
 
   // Declare methods that deal with the individual node types.
 #define DECLARE_DO(type) void Do##type(L##type* node);
@@ -98,10 +131,16 @@ class LCodeGen BASE_EMBEDDED {
   bool is_done() const { return status_ == DONE; }
   bool is_aborted() const { return status_ == ABORTED; }
 
+  int strict_mode_flag() const {
+    return info_->is_strict() ? kStrictMode : kNonStrictMode;
+  }
+
   LChunk* chunk() const { return chunk_; }
   Scope* scope() const { return scope_; }
   HGraph* graph() const { return chunk_->graph(); }
-  MacroAssembler* masm() const { return masm_; }
+
+  Register scratch0() { return r9; }
+  DwVfpRegister double_scratch0() { return d0; }
 
   int GetNextEmittedBlock(int block);
   LInstruction* GetNextInstruction();
@@ -147,7 +186,7 @@ class LCodeGen BASE_EMBEDDED {
                          int arity,
                          LInstruction* instr);
 
-  void LoadPrototype(Register result, Handle<JSObject> prototype);
+  void LoadHeapObject(Register result, Handle<HeapObject> object);
 
   void RegisterLazyDeoptimization(LInstruction* instr);
   void RegisterEnvironmentForDeoptimization(LEnvironment* environment);
@@ -164,34 +203,31 @@ class LCodeGen BASE_EMBEDDED {
   Register ToRegister(int index) const;
   DoubleRegister ToDoubleRegister(int index) const;
 
-  // LOperand must be a register.
-  Register ToRegister(LOperand* op) const;
-
-  // LOperand is loaded into scratch, unless already a register.
-  Register EmitLoadRegister(LOperand* op, Register scratch);
-
-  // LOperand must be a double register.
-  DoubleRegister ToDoubleRegister(LOperand* op) const;
-
-  // LOperand is loaded into dbl_scratch, unless already a double register.
-  DoubleRegister EmitLoadDoubleRegister(LOperand* op,
-                                        SwVfpRegister flt_scratch,
-                                        DoubleRegister dbl_scratch);
-
-  int ToInteger32(LConstantOperand* op) const;
-  Operand ToOperand(LOperand* op);
-  MemOperand ToMemOperand(LOperand* op) const;
-
   // Specific math operations - used from DoUnaryMathOperation.
+  void EmitIntegerMathAbs(LUnaryMathOperation* instr);
   void DoMathAbs(LUnaryMathOperation* instr);
+  void EmitVFPTruncate(VFPRoundingMode rounding_mode,
+                       SwVfpRegister result,
+                       DwVfpRegister double_input,
+                       Register scratch1,
+                       Register scratch2);
   void DoMathFloor(LUnaryMathOperation* instr);
+  void DoMathRound(LUnaryMathOperation* instr);
   void DoMathSqrt(LUnaryMathOperation* instr);
 
   // Support for recording safepoint and position information.
+  void RecordSafepoint(LPointerMap* pointers,
+                       Safepoint::Kind kind,
+                       int arguments,
+                       int deoptimization_index);
   void RecordSafepoint(LPointerMap* pointers, int deoptimization_index);
+  void RecordSafepoint(int deoptimization_index);
   void RecordSafepointWithRegisters(LPointerMap* pointers,
                                     int arguments,
                                     int deoptimization_index);
+  void RecordSafepointWithRegistersAndDoubles(LPointerMap* pointers,
+                                              int arguments,
+                                              int deoptimization_index);
   void RecordPosition(int position);
 
   static Condition TokenToCondition(Token::Value op, bool is_unsigned);
@@ -217,6 +253,10 @@ class LCodeGen BASE_EMBEDDED {
                          Label* is_not_object,
                          Label* is_object);
 
+  // Emits optimized code for %_IsConstructCall().
+  // Caller should branch on equal condition.
+  void EmitIsConstructCall(Register temp1, Register temp2);
+
   LChunk* const chunk_;
   MacroAssembler* const masm_;
   CompilationInfo* const info_;
@@ -236,6 +276,9 @@ class LCodeGen BASE_EMBEDDED {
   // Builder that keeps track of safepoints in the code. The table
   // itself is emitted at the end of the generated code.
   SafepointTableBuilder safepoints_;
+
+  // Compiler from a set of parallel moves to a sequential list of moves.
+  LGapResolver resolver_;
 
   friend class LDeferredCode;
   friend class LEnvironment;

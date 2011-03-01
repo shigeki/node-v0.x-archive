@@ -422,7 +422,7 @@ static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
   // [rsp+0x20] : argv
 
   // Clear the context before we push it when entering the JS frame.
-  __ xor_(rsi, rsi);
+  __ Set(rsi, 0);
   __ EnterInternalFrame();
 
   // Load the function context into rsi.
@@ -451,7 +451,7 @@ static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
   // rdi : function
 
   // Clear the context before we push it when entering the JS frame.
-  __ xor_(rsi, rsi);
+  __ Set(rsi, 0);
   // Enter an internal frame.
   __ EnterInternalFrame();
 
@@ -479,7 +479,7 @@ static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
   // Register rbx points to array of pointers to handle locations.
   // Push the values of these handles.
   Label loop, entry;
-  __ xor_(rcx, rcx);  // Set loop variable to 0.
+  __ Set(rcx, 0);  // Set loop variable to 0.
   __ jmp(&entry);
   __ bind(&loop);
   __ movq(kScratchRegister, Operand(rbx, rcx, times_pointer_size, 0));
@@ -561,7 +561,33 @@ void Builtins::Generate_LazyRecompile(MacroAssembler* masm) {
 
 static void Generate_NotifyDeoptimizedHelper(MacroAssembler* masm,
                                              Deoptimizer::BailoutType type) {
-  __ int3();
+  // Enter an internal frame.
+  __ EnterInternalFrame();
+
+  // Pass the deoptimization type to the runtime system.
+  __ Push(Smi::FromInt(static_cast<int>(type)));
+
+  __ CallRuntime(Runtime::kNotifyDeoptimized, 1);
+  // Tear down temporary frame.
+  __ LeaveInternalFrame();
+
+  // Get the full codegen state from the stack and untag it.
+  __ SmiToInteger32(rcx, Operand(rsp, 1 * kPointerSize));
+
+  // Switch on the state.
+  NearLabel not_no_registers, not_tos_rax;
+  __ cmpq(rcx, Immediate(FullCodeGenerator::NO_REGISTERS));
+  __ j(not_equal, &not_no_registers);
+  __ ret(1 * kPointerSize);  // Remove state.
+
+  __ bind(&not_no_registers);
+  __ movq(rax, Operand(rsp, 2 * kPointerSize));
+  __ cmpq(rcx, Immediate(FullCodeGenerator::TOS_REG));
+  __ j(not_equal, &not_tos_rax);
+  __ ret(2 * kPointerSize);  // Remove state, rax.
+
+  __ bind(&not_tos_rax);
+  __ Abort("no cases left");
 }
 
 void Builtins::Generate_NotifyDeoptimized(MacroAssembler* masm) {
@@ -570,12 +596,21 @@ void Builtins::Generate_NotifyDeoptimized(MacroAssembler* masm) {
 
 
 void Builtins::Generate_NotifyLazyDeoptimized(MacroAssembler* masm) {
-  Generate_NotifyDeoptimizedHelper(masm, Deoptimizer::EAGER);
+  Generate_NotifyDeoptimizedHelper(masm, Deoptimizer::LAZY);
 }
 
 
 void Builtins::Generate_NotifyOSR(MacroAssembler* masm) {
-  __ int3();
+  // For now, we are relying on the fact that Runtime::NotifyOSR
+  // doesn't do any garbage collection which allows us to save/restore
+  // the registers without worrying about which of them contain
+  // pointers. This seems a bit fragile.
+  __ Pushad();
+  __ EnterInternalFrame();
+  __ CallRuntime(Runtime::kNotifyOSR, 0);
+  __ LeaveInternalFrame();
+  __ Popad();
+  __ ret(0);
 }
 
 
@@ -616,6 +651,13 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     // Change context eagerly in case we need the global receiver.
     __ movq(rsi, FieldOperand(rdi, JSFunction::kContextOffset));
 
+    // Do not transform the receiver for strict mode functions.
+    __ movq(rbx, FieldOperand(rdi, JSFunction::kSharedFunctionInfoOffset));
+    __ testb(FieldOperand(rbx, SharedFunctionInfo::kStrictModeByteOffset),
+             Immediate(1 << SharedFunctionInfo::kStrictModeBitWithinByte));
+    __ j(not_equal, &shift_arguments);
+
+    // Compute the receiver in non-strict mode.
     __ movq(rbx, Operand(rsp, rax, times_pointer_size, 0));
     __ JumpIfSmi(rbx, &convert_to_object);
 
@@ -668,7 +710,7 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
   //     become the receiver.
   __ bind(&non_function);
   __ movq(Operand(rsp, rax, times_pointer_size, 0), rdi);
-  __ xor_(rdi, rdi);
+  __ Set(rdi, 0);
 
   // 4. Shift arguments and return address one slot down on the stack
   //    (overwriting the original receiver).  Adjust argument count to make
@@ -689,7 +731,7 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
   { Label function;
     __ testq(rdi, rdi);
     __ j(not_zero, &function);
-    __ xor_(rbx, rbx);
+    __ Set(rbx, 0);
     __ GetBuiltinEntry(rdx, Builtins::CALL_NON_FUNCTION);
     __ Jump(Handle<Code>(builtin(ArgumentsAdaptorTrampoline)),
             RelocInfo::CODE_TARGET);
@@ -772,6 +814,14 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
   // Compute the receiver.
   Label call_to_object, use_global_receiver, push_receiver;
   __ movq(rbx, Operand(rbp, kReceiverOffset));
+
+  // Do not transform the receiver for strict mode functions.
+  __ movq(rdx, FieldOperand(rdi, JSFunction::kSharedFunctionInfoOffset));
+  __ testb(FieldOperand(rdx, SharedFunctionInfo::kStrictModeByteOffset),
+           Immediate(1 << SharedFunctionInfo::kStrictModeBitWithinByte));
+  __ j(not_equal, &push_receiver);
+
+  // Compute the receiver in non-strict mode.
   __ JumpIfSmi(rbx, &call_to_object);
   __ CompareRoot(rbx, Heap::kNullValueRootIndex);
   __ j(equal, &use_global_receiver);
@@ -1380,7 +1430,58 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
 
 
 void Builtins::Generate_OnStackReplacement(MacroAssembler* masm) {
-  __ int3();
+  // Get the loop depth of the stack guard check. This is recorded in
+  // a test(rax, depth) instruction right after the call.
+  Label stack_check;
+  __ movq(rbx, Operand(rsp, 0));  // return address
+  __ movzxbq(rbx, Operand(rbx, 1));  // depth
+
+  // Get the loop nesting level at which we allow OSR from the
+  // unoptimized code and check if we want to do OSR yet. If not we
+  // should perform a stack guard check so we can get interrupts while
+  // waiting for on-stack replacement.
+  __ movq(rax, Operand(rbp, JavaScriptFrameConstants::kFunctionOffset));
+  __ movq(rcx, FieldOperand(rax, JSFunction::kSharedFunctionInfoOffset));
+  __ movq(rcx, FieldOperand(rcx, SharedFunctionInfo::kCodeOffset));
+  __ cmpb(rbx, FieldOperand(rcx, Code::kAllowOSRAtLoopNestingLevelOffset));
+  __ j(greater, &stack_check);
+
+  // Pass the function to optimize as the argument to the on-stack
+  // replacement runtime function.
+  __ EnterInternalFrame();
+  __ push(rax);
+  __ CallRuntime(Runtime::kCompileForOnStackReplacement, 1);
+  __ LeaveInternalFrame();
+
+  // If the result was -1 it means that we couldn't optimize the
+  // function. Just return and continue in the unoptimized version.
+  NearLabel skip;
+  __ SmiCompare(rax, Smi::FromInt(-1));
+  __ j(not_equal, &skip);
+  __ ret(0);
+
+  // If we decide not to perform on-stack replacement we perform a
+  // stack guard check to enable interrupts.
+  __ bind(&stack_check);
+  NearLabel ok;
+  __ CompareRoot(rsp, Heap::kStackLimitRootIndex);
+  __ j(above_equal, &ok);
+
+  StackCheckStub stub;
+  __ TailCallStub(&stub);
+  __ Abort("Unreachable code: returned from tail call.");
+  __ bind(&ok);
+  __ ret(0);
+
+  __ bind(&skip);
+  // Untag the AST id and push it on the stack.
+  __ SmiToInteger32(rax, rax);
+  __ push(rax);
+
+  // Generate the code for doing the frame-to-frame translation using
+  // the deoptimizer infrastructure.
+  Deoptimizer::EntryGenerator generator(masm, Deoptimizer::OSR);
+  generator.Generate();
 }
 
 

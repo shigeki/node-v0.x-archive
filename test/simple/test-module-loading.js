@@ -5,6 +5,14 @@ var fs = require('fs');
 
 common.debug('load test-module-loading.js');
 
+// assert that this is the main module.
+assert.equal(require.main.id, '.', 'main module should have id of \'.\'');
+assert.equal(require.main, module, 'require.main should === module');
+assert.equal(process.mainModule, module,
+             'process.mainModule should === module');
+// assert that it's *not* the main module in the required module.
+require('../fixtures/not-main-module.js');
+
 // require a file with a request that includes the extension
 var a_js = require('../fixtures/a.js');
 assert.equal(42, a_js.number);
@@ -52,11 +60,29 @@ var one = require('../fixtures/nested-index/one'),
     two = require('../fixtures/nested-index/two');
 assert.notEqual(one.hello, two.hello);
 
+common.debug('test index.js in a folder with a trailing slash');
+var three = require('../fixtures/nested-index/three'),
+    threeFolder = require('../fixtures/nested-index/three/'),
+    threeIndex = require('../fixtures/nested-index/three/index.js');
+assert.equal(threeFolder, threeIndex);
+assert.notEqual(threeFolder, three);
+
+common.debug('test package.json require() loading');
+assert.equal(require('../fixtures/packages/main').ok, 'ok',
+             'Failed loading package');
+assert.equal(require('../fixtures/packages/main-index').ok, 'ok',
+             'Failed loading package with index.js in main subdir');
+
 common.debug('test cycles containing a .. path');
 var root = require('../fixtures/cycles/root'),
     foo = require('../fixtures/cycles/folder/foo');
 assert.equal(root.foo, foo);
 assert.equal(root.sayHello(), root.hello);
+
+common.debug('test node_modules folders');
+// asserts are in the fixtures files themselves,
+// since they depend on the folder structure.
+require('../fixtures/node_modules/foo');
 
 common.debug('test name clashes');
 // this one exists and should import the local module
@@ -100,7 +126,7 @@ common.debug('load modules by absolute id, then change require.paths, ' +
              'and load another module with the same absolute id.');
 // this will throw if it fails.
 var foo = require('../fixtures/require-path/p1/foo');
-process.assert(foo.bar.expect === foo.bar.actual);
+assert.ok(foo.bar.expect === foo.bar.actual);
 
 assert.equal(require('../fixtures/foo').foo, 'ok',
              'require module with no extension');

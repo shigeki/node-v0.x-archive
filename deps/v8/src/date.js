@@ -81,12 +81,7 @@ function TimeFromYear(year) {
 
 
 function InLeapYear(time) {
-  return DaysInYear(YearFromTime(time)) == 366 ? 1 : 0;
-}
-
-
-function DayWithinYear(time) {
-  return DAY(time) - DayFromYear(YearFromTime(time));
+  return DaysInYear(YearFromTime(time)) - 365;  // Returns 1 or 0.
 }
 
 
@@ -605,7 +600,7 @@ function DateToTimeString() {
 
 // ECMA 262 - 15.9.5.5
 function DateToLocaleString() {
-  return DateToString.call(this);
+  return %_CallFunction(this, DateToString);
 }
 
 
@@ -973,7 +968,7 @@ function DateSetYear(year) {
 // do that either.  Instead, we create a new function whose name
 // property will return toGMTString.
 function DateToGMTString() {
-  return DateToUTCString.call(this);
+  return %_CallFunction(this, DateToUTCString);
 }
 
 
@@ -1000,10 +995,43 @@ function DateToISOString() {
 function DateToJSON(key) {
   var o = ToObject(this);
   var tv = DefaultNumber(o);
-  if (IS_NUMBER(tv) && !$isFinite(tv)) { 
+  if (IS_NUMBER(tv) && !NUMBER_IS_FINITE(tv)) { 
     return null; 
   }
   return o.toISOString();
+}
+
+
+function ResetDateCache() {
+
+  // Reset the local_time_offset:
+  local_time_offset = %DateLocalTimeOffset();
+
+  // Reset the DST offset cache:
+  var cache = DST_offset_cache;
+  cache.offset = 0;
+  cache.start = 0;
+  cache.end = -1;
+  cache.increment = 0;
+  cache.initial_increment = 19 * msPerDay;
+
+  // Reset the timezone cache:
+  timezone_cache_time = $NaN;
+  timezone_cache_timezone = undefined;
+
+  // Reset the ltcache:
+  ltcache.key = null;
+  ltcache.val = null;
+
+  // Reset the ymd_from_time_cache:
+  ymd_from_time_cache = [$NaN, $NaN, $NaN];
+  ymd_from_time_cached_time = $NaN;
+
+  // Reset the date cache:
+  cache = Date_cache;
+  cache.time = $NaN;
+  cache.year = $NaN;
+  cache.string = null;
 }
 
 

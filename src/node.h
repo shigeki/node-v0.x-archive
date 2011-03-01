@@ -44,7 +44,7 @@ do {                                                                      \
                                   __callback##_TEM);                      \
 } while (0)
 
-enum encoding {ASCII, UTF8, BASE64, BINARY};
+enum encoding {ASCII, UTF8, BASE64, UCS2, BINARY, HEX};
 enum encoding ParseEncoding(v8::Handle<v8::Value> encoding_v,
                             enum encoding _default = BINARY);
 void FatalException(v8::TryCatch &try_catch);
@@ -63,7 +63,19 @@ ssize_t DecodeWrite(char *buf,
                     v8::Handle<v8::Value>,
                     enum encoding encoding = BINARY);
 
-v8::Local<v8::Object> BuildStatsObject(struct stat * s);
+// Use different stat structs & calls on windows and posix;
+// on windows, _stati64 is utf-8 and big file aware.
+#if __POSIX__
+# define NODE_STAT        stat
+# define NODE_FSTAT       fstat
+# define NODE_STAT_STRUCT struct stat
+#else // __MINGW32__
+# define NODE_STAT        _stati64
+# define NODE_FSTAT       _fstati64
+# define NODE_STAT_STRUCT struct _stati64
+#endif
+
+v8::Local<v8::Object> BuildStatsObject(NODE_STAT_STRUCT *s);
 
 
 /**

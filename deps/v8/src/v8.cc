@@ -34,7 +34,6 @@
 #include "hydrogen.h"
 #include "lithium-allocator.h"
 #include "log.h"
-#include "oprofile-agent.h"
 #include "runtime-profiler.h"
 #include "serialize.h"
 #include "simulator.h"
@@ -55,7 +54,12 @@ bool V8::Initialize(Deserializer* des) {
   if (has_been_disposed_ || has_fatal_error_) return false;
   if (IsRunning()) return true;
 
+#if defined(V8_TARGET_ARCH_ARM) && !defined(USE_ARM_EABI)
+  use_crankshaft_ = false;
+#else
   use_crankshaft_ = FLAG_crankshaft;
+#endif
+
   // Peephole optimization might interfere with deoptimization.
   FLAG_peephole_optimization = !use_crankshaft_;
   is_running_ = true;
@@ -79,7 +83,7 @@ bool V8::Initialize(Deserializer* des) {
   // Initialize other runtime facilities
 #if defined(USE_SIMULATOR)
 #if defined(V8_TARGET_ARCH_ARM)
-  ::assembler::arm::Simulator::Initialize();
+  Simulator::Initialize();
 #elif defined(V8_TARGET_ARCH_MIPS)
   ::assembler::mips::Simulator::Initialize();
 #endif
@@ -129,7 +133,6 @@ bool V8::Initialize(Deserializer* des) {
   // objects in place for creating the code object used for probing.
   CPU::Setup();
 
-  OProfileAgent::Initialize();
   Deoptimizer::Setup();
   LAllocator::Setup();
   RuntimeProfiler::Setup();
@@ -161,7 +164,6 @@ void V8::TearDown() {
   Logger::EnsureTickerStopped();
 
   Deoptimizer::TearDown();
-  OProfileAgent::TearDown();
 
   if (FLAG_preemption) {
     v8::Locker locker;

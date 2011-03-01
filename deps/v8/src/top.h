@@ -32,14 +32,23 @@
 #include "compilation-cache.h"
 #include "frames-inl.h"
 #include "runtime-profiler.h"
-#include "simulator.h"
 
 namespace v8 {
 namespace internal {
 
+class Simulator;
 
 #define RETURN_IF_SCHEDULED_EXCEPTION() \
   if (Top::has_scheduled_exception()) return Top::PromoteScheduledException()
+
+#define RETURN_IF_EMPTY_HANDLE_VALUE(call, value) \
+  if (call.is_null()) {                           \
+    ASSERT(Top::has_pending_exception());         \
+    return value;                                 \
+  }
+
+#define RETURN_IF_EMPTY_HANDLE(call)      \
+  RETURN_IF_EMPTY_HANDLE_VALUE(call, Failure::Exception())
 
 // Top has static variables used for JavaScript execution.
 
@@ -109,7 +118,7 @@ class ThreadLocalTop BASE_EMBEDDED {
 
 #ifdef USE_SIMULATOR
 #ifdef V8_TARGET_ARCH_ARM
-  assembler::arm::Simulator* simulator_;
+  Simulator* simulator_;
 #elif V8_TARGET_ARCH_MIPS
   assembler::mips::Simulator* simulator_;
 #endif
@@ -240,12 +249,7 @@ class Top {
     thread_local_.scheduled_exception_ = Heap::the_hole_value();
   }
 
-  static void setup_external_caught() {
-    thread_local_.external_caught_exception_ =
-        has_pending_exception() &&
-        (thread_local_.catcher_ != NULL) &&
-        (try_catch_handler() == thread_local_.catcher_);
-  }
+  static bool IsExternallyCaught();
 
   static void SetCaptureStackTraceForUncaughtExceptions(
       bool capture,
@@ -255,6 +259,11 @@ class Top {
   // Tells whether the current context has experienced an out of memory
   // exception.
   static bool is_out_of_memory();
+
+  static bool is_catchable_by_javascript(MaybeObject* exception) {
+    return (exception != Failure::OutOfMemoryException()) &&
+        (exception != Heap::termination_exception());
+  }
 
   // JS execution stack (see frames.h).
   static Address c_entry_fp(ThreadLocalTop* thread) {
@@ -386,7 +395,9 @@ class Top {
   static void DoThrow(MaybeObject* exception,
                       MessageLocation* location,
                       const char* message);
-  static bool ShouldReturnException(bool* is_caught_externally,
+  // Checks if exception should be reported and finds out if it's
+  // caught externally.
+  static bool ShouldReportException(bool* can_be_caught_externally,
                                     bool catchable_by_javascript);
 
   // Attempts to compute the current source location, storing the
