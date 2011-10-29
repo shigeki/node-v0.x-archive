@@ -151,7 +151,7 @@ assertFalse(Object.isSealed(arr));
 Object.seal(arr);
 assertTrue(Object.isSealed(arr));
 assertFalse(Object.isExtensible(arr));
-// Since the values in the array is still writable this object 
+// Since the values in the array is still writable this object
 // is not frozen.
 assertFalse(Object.isFrozen(arr));
 

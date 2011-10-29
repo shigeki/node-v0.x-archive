@@ -128,7 +128,7 @@ if(DTRACE)
 endif()
 
 install(TARGETS node RUNTIME DESTINATION bin)
-install(FILES     
+install(FILES
   ${PROJECT_BINARY_DIR}/config.h
   src/node.h
   src/node_object_wrap.h

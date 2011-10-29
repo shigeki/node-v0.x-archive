@@ -15,17 +15,17 @@ for(var i = 0; i < 10; ++i)
     port: 443,
   }, function(res)
   {
-    var data = ''; 
+    var data = '';
     res.on('data', function(chunk)
-    {   
+    {
       data += chunk;
-    }); 
+    });
     res.on('end', function()
-    {   
+    {
       console.log(res.statusCode);
-    }); 
+    });
   }).on('error', function(error)
   {
     console.log(error);
-  }); 
+  });
 }

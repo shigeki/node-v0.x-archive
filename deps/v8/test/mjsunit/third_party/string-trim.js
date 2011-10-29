@@ -31,7 +31,7 @@
 
 // Based on LayoutTests/fast/js/script-tests/string-trim.js
 
-// References to trim(), trimLeft() and trimRight() functions for 
+// References to trim(), trimLeft() and trimRight() functions for
 // testing Function's *.call() and *.apply() methods.
 
 var trim            = String.prototype.trim;

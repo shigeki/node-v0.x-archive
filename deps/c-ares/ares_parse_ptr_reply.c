@@ -198,7 +198,7 @@ int ares_parse_ptr_reply(const unsigned char *abuf, int alen, const void *addr,
       status = ARES_ENOMEM;
     }
   for (i=0 ; i<aliascnt ; i++)
-    if (aliases[i]) 
+    if (aliases[i])
       free(aliases[i]);
   free(aliases);
   if (hostname)

@@ -13,8 +13,8 @@ var testCases =
         { ok: false, key: 'agent2-key', cert: 'agent2-cert' },
         { ok: false, key: 'agent3-key', cert: 'agent3-cert' },
       ]
-    }, 
-  
+    },
+
     { ca: [],
       key: 'agent2-key',
       cert: 'agent2-cert',
@@ -64,15 +64,15 @@ function testServers(index, servers, clientOptions, cb) {
   var ok = serverOptions.ok;
 
   if (serverOptions.key) {
-    serverOptions.key = loadPEM(serverOptions.key); 
+    serverOptions.key = loadPEM(serverOptions.key);
   }
 
-  if (serverOptions.cert) { 
-    serverOptions.cert = loadPEM(serverOptions.cert); 
+  if (serverOptions.cert) {
+    serverOptions.cert = loadPEM(serverOptions.cert);
   }
 
   var server = tls.createServer(serverOptions, function(s) {
-    s.end("hello world\n"); 
+    s.end("hello world\n");
   });
 
   server.listen(common.PORT, function() {
@@ -83,7 +83,7 @@ function testServers(index, servers, clientOptions, cb) {
 
       console.error("expected: " + ok + " authed: " + client.authorized);
 
-      assert.equal(ok, client.authorized); 
+      assert.equal(ok, client.authorized);
       server.close();
     });
 

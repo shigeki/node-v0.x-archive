@@ -18,7 +18,7 @@ a {
   a:hover, a:focus {
     text-decoration: none;
   }
-  
+
     code a:hover {
       background: none;
       color: #b950b7;
@@ -142,7 +142,7 @@ h6 {
     font-family: Monaco, Consolas, "Lucida Console", monospace;
     margin: 0; padding: 0;
   }
-  
+
   .pre {
     font-family: Monaco, Consolas, "Lucida Console", monospace;
     line-height: 1.5438em;
@@ -157,7 +157,7 @@ h6 {
     border-width: 1px 1px 1px 6px;
     margin: -0.5em 0 1.1em;
   }
-  
+
   pre + h3 {
     margin-top: 2.225em;
   }
@@ -191,18 +191,18 @@ hr {
 }
 
 #toc {
-  
+
 }
 
   #toc h2 {
     font-size: 1em;
     line-height: 1.4em;
   }
-  
+
   #toc h2 a {
     float: right;
   }
-  
+
   #toc hr {
     margin: 1em 0 2em;
   }
@@ -222,7 +222,7 @@ a.octothorpe {
   opacity: 0;
   -webkit-transition: opacity 0.2s linear;
 }
-    p:hover  > a.octothorpe, 
+    p:hover  > a.octothorpe,
     dt:hover > a.octothorpe,
     dd:hover > a.octothorpe,
     h1:hover > a.octothorpe,

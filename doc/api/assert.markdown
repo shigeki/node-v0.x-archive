@@ -37,7 +37,7 @@ Tests strict non-equality, as determined by the strict not equal operator ( `!==
 
 ### assert.throws(block, [error], [message])
 
-Expects `block` to throw an error. `error` can be constructor, regexp or 
+Expects `block` to throw an error. `error` can be constructor, regexp or
 validation function.
 
 Validate instanceof using constructor:

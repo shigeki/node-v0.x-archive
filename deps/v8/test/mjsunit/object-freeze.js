@@ -88,7 +88,7 @@ assertFalse(desc.configurable);
 assertEquals("foobar", desc.value);
 
 // Make sure that even if we try overwrite a value that is not writable, it is
-// not changed. 
+// not changed.
 obj.x = "tete";
 assertEquals(42, obj.x);
 obj.x = { get: function() {return 43}, set: function() {} };

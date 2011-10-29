@@ -186,7 +186,7 @@ primes[0] = "";
 primes[1] = holey;
 assertThrows("String.prototype.concat.apply.apply('foo', primes)");
 assertEquals("morseper",
-    String.prototype.concat.apply.apply(String.prototype.concat, primes), 
+    String.prototype.concat.apply.apply(String.prototype.concat, primes),
     "moreseper-prime");
 
 delete(Array.prototype["1"]);

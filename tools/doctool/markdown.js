@@ -1297,7 +1297,7 @@ function render_tree( jsonml, xhtml ) {
   for ( var a in attributes ) {
     tag_attrs += " " + a + '="' + attributes[ a ] + '"';
   }
-  
+
   // if xhtml, self-close empty tags
   // be careful about adding whitespace here for inline elements
   var markup = "<"+ tag + tag_attrs;

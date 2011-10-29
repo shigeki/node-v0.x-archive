@@ -677,7 +677,7 @@ name, you can call it anytime, but it makes most sense after forking, in
 the child process. You I<must> call it (or use C<EVFLAG_FORKCHECK>) in the
 child before resuming or calling C<ev_run>.
 
-Again, you I<have> to call it on I<any> loop that you want to re-use after 
+Again, you I<have> to call it on I<any> loop that you want to re-use after
 a fork, I<even if you do not plan to use the loop in the parent>. This is
 because some kernel interfaces *cough* I<kqueue> *cough* do funny things
 during fork.
@@ -2273,7 +2273,7 @@ Example: Call a callback every hour, starting now:
    ev_periodic_init (&hourly_tick, clock_cb,
                      fmod (ev_now (loop), 3600.), 3600., 0);
    ev_periodic_start (loop, &hourly_tick);
-  
+
 
 =head2 C<ev_signal> - signal me when a signal gets signalled!
 
@@ -3053,7 +3053,7 @@ used).
    struct ev_loop *loop_hi = ev_default_init (0);
    struct ev_loop *loop_lo = 0;
    ev_embed embed;
-   
+
    // see if there is a chance of getting one that works
    // (remember that a flags value of 0 means autodetection)
    loop_lo = ev_embeddable_backends () & ev_recommended_backends ()
@@ -3077,7 +3077,7 @@ C<loop_socket>. (One might optionally use C<EVFLAG_NOENV>, too).
    struct ev_loop *loop = ev_default_init (0);
    struct ev_loop *loop_socket = 0;
    ev_embed embed;
-   
+
    if (ev_supported_backends () & ~ev_recommended_backends () & EVBACKEND_KQUEUE)
      if ((loop_socket = ev_loop_new (EVBACKEND_KQUEUE))
        {
@@ -3751,7 +3751,7 @@ you to use some convenience methods to start/stop watchers and also change
 the callback model to a model using method callbacks on objects.
 
 To use it,
-   
+
    #include <ev++.h>
 
 This automatically includes F<ev.h> and puts all of its definitions (many
@@ -3860,7 +3860,7 @@ Example: use a functor object as callback.
        ...
      }
    }
-    
+
    myfunctor f;
 
    ev::io w;

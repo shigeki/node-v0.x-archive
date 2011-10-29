@@ -53,7 +53,7 @@ def configure(conf):
       #include <stdio.h>
 
       int main() {
-          struct timespec ts; 
+          struct timespec ts;
           int status = syscall(SYS_clock_gettime, CLOCK_REALTIME, &ts);
           return 0;
       }

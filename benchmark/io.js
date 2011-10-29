@@ -55,7 +55,7 @@ function readtest(size, bsize) {
   var s = fs.createReadStream(path, {'flags': 'r', 'encoding': 'binary', 'mode': 0644, 'bufferSize': bsize});
   s.addListener("data", function (chunk) {
     // got a chunk...
-    
+
   });
   return s;
 }

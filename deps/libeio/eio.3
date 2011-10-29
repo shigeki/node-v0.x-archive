@@ -2248,7 +2248,7 @@ used).
 \&  struct ev_loop *loop_hi = ev_default_init (0);
 \&  struct ev_loop *loop_lo = 0;
 \&  struct ev_embed embed;
-\&  
+\&
 \&  // see if there is a chance of getting one that works
 \&  // (remember that a flags value of 0 means autodetection)
 \&  loop_lo = ev_embeddable_backends () & ev_recommended_backends ()
@@ -2274,7 +2274,7 @@ kqueue implementation). Store the kqueue/socket\-only event loop in
 \&  struct ev_loop *loop = ev_default_init (0);
 \&  struct ev_loop *loop_socket = 0;
 \&  struct ev_embed embed;
-\&  
+\&
 \&  if (ev_supported_backends () & ~ev_recommended_backends () & EVBACKEND_KQUEUE)
 \&    if ((loop_socket = ev_loop_new (EVBACKEND_KQUEUE))
 \&      {

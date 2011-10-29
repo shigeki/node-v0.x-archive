@@ -1,6 +1,6 @@
 var binding = require('./build/default/binding');
 
-c = 0 
+c = 0
 
 function js() {
   return c++; //(new Date()).getTime();
@@ -38,6 +38,6 @@ console.log("\nJS function call speed: %d microseconds", toMicro(jsDiff));
 console.log("C++ function call speed: %d microseconds", toMicro(cxxDiff));
 
 
-console.log("\nJS speedup " + (cxxDiff / jsDiff)); 
+console.log("\nJS speedup " + (cxxDiff / jsDiff));
 
 

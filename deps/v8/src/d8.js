@@ -387,14 +387,14 @@ function DebugRequest(cmd_line) {
           this.frameCommandToJSONRequest_('' +
                                           (Debug.State.currentFrame + 1));
       break;
-      
+
     case 'down':
     case 'do':
       this.request_ =
           this.frameCommandToJSONRequest_('' +
                                           (Debug.State.currentFrame - 1));
       break;
-      
+
     case 'set':
     case 'print':
     case 'p':
@@ -1011,7 +1011,7 @@ DebugRequest.prototype.changeBreakpointCommandToJSONRequest_ =
         arg2 = 'uncaught';
       }
       excType = arg2;
-      
+
     // Check for:
     //   en[able] [all|unc[aught]] exc[eptions]
     //   dis[able] [all|unc[aught]] exc[eptions]
@@ -1070,7 +1070,7 @@ DebugRequest.prototype.changeBreakpointCommandToJSONRequest_ =
         request.arguments.ignoreCount = parseInt(otherArgs);
         break;
       default:
-        throw new Error('Invalid arguments.');  
+        throw new Error('Invalid arguments.');
     }
   } else {
     throw new Error('Invalid arguments.');
@@ -1423,7 +1423,7 @@ function DebugResponseDetails(response) {
         } else if (body.breakOnUncaughtExceptions) {
           result += '* breaking on UNCAUGHT exceptions is enabled\n';
         } else {
-          result += '* all exception breakpoints are disabled\n';            
+          result += '* all exception breakpoints are disabled\n';
         }
         details.text = result;
         break;

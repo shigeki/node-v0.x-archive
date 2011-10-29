@@ -28,7 +28,7 @@
 ;; This is a Scheme script for the Bigloo compiler. Bigloo must be compiled with
 ;; support for bignums. The compilation of the script can be done as follows:
 ;;   bigloo -static-bigloo -o generate-ten-powers generate-ten-powers.scm
-;;  
+;;
 ;; Generate approximations of 10^k.
 
 (module gen-ten-powers

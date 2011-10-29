@@ -6,14 +6,14 @@
  *
  * Redistribution and use in source and binary forms, with or without modifica-
  * tion, are permitted provided that the following conditions are met:
- * 
+ *
  *   1.  Redistributions of source code must retain the above copyright notice,
  *       this list of conditions and the following disclaimer.
- * 
+ *
  *   2.  Redistributions in binary form must reproduce the above copyright
  *       notice, this list of conditions and the following disclaimer in the
  *       documentation and/or other materials provided with the distribution.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR IMPLIED
  * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MER-
  * CHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO
@@ -241,7 +241,7 @@ static unsigned int started, idle, wanted = 4;
 
 static void (*want_poll_cb) (void);
 static void (*done_poll_cb) (void);
- 
+
 static unsigned int max_poll_time;     /* reslock */
 static unsigned int max_poll_reqs;     /* reslock */
 
@@ -449,7 +449,7 @@ static void etp_atfork_child (void)
 
 static void
 etp_once_init (void)
-{    
+{
   X_THREAD_ATFORK (etp_atfork_prepare, etp_atfork_parent, etp_atfork_child);
 }
 
@@ -495,7 +495,7 @@ static void etp_maybe_start_thread (void)
 {
   if (expect_true (etp_nthreads () >= wanted))
     return;
-  
+
   /* todo: maybe use idle here, but might be less exact */
   if (expect_true (0 <= (int)etp_nthreads () + (int)etp_npending () - (int)etp_nreqs ()))
     return;
@@ -1053,7 +1053,7 @@ eio__sendfile (int ofd, int ifd, off_t offset, size_t count, etp_worker *self)
       while (count)
         {
           ssize_t cnt;
-          
+
           cnt = pread (ifd, eio_buf, count > EIO_BUFSIZE ? EIO_BUFSIZE : count, offset);
 
           if (cnt <= 0)
@@ -1199,7 +1199,7 @@ eio_dent_insertion_sort (eio_dirent *dents, int size)
   {
     int i;
     eio_dirent *min = dents;
-    
+
     /* the radix pre-pass ensures that the minimum element is in the first EIO_SORT_CUTOFF + 1 elements */
     for (i = size > EIO_SORT_FAST ? EIO_SORT_CUTOFF + 1 : size; --i; )
       if (EIO_DENT_CMP (dents [i], <, *min))
@@ -1374,31 +1374,31 @@ eio__scandir (eio_req *req, etp_worker *self)
                     #endif
                     #ifdef DT_CHR
                       case DT_CHR:  ent->type = EIO_DT_CHR;  break;
-                    #endif          
+                    #endif
                     #ifdef DT_MPC
                       case DT_MPC:  ent->type = EIO_DT_MPC;  break;
-                    #endif          
+                    #endif
                     #ifdef DT_DIR
                       case DT_DIR:  ent->type = EIO_DT_DIR;  break;
-                    #endif          
+                    #endif
                     #ifdef DT_NAM
                       case DT_NAM:  ent->type = EIO_DT_NAM;  break;
-                    #endif          
+                    #endif
                     #ifdef DT_BLK
                       case DT_BLK:  ent->type = EIO_DT_BLK;  break;
-                    #endif          
+                    #endif
                     #ifdef DT_MPB
                       case DT_MPB:  ent->type = EIO_DT_MPB;  break;
-                    #endif          
+                    #endif
                     #ifdef DT_REG
                       case DT_REG:  ent->type = EIO_DT_REG;  break;
-                    #endif          
+                    #endif
                     #ifdef DT_NWK
                       case DT_NWK:  ent->type = EIO_DT_NWK;  break;
-                    #endif          
+                    #endif
                     #ifdef DT_CMP
                       case DT_CMP:  ent->type = EIO_DT_CMP;  break;
-                    #endif          
+                    #endif
                     #ifdef DT_LNK
                       case DT_LNK:  ent->type = EIO_DT_LNK;  break;
                     #endif
@@ -1448,7 +1448,7 @@ eio__scandir (eio_req *req, etp_worker *self)
   /* Windows */
   static intptr_t
   eio_pagesize (void)
-  { 
+  {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     return si.dwPageSize;
@@ -1627,7 +1627,7 @@ X_THREAD_PROC (etp_proc)
       --nready;
 
       X_UNLOCK (reqlock);
-     
+
       if (req->type < 0)
         goto quit;
 

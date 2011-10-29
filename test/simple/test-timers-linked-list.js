@@ -64,7 +64,7 @@ L.remove(B);
 assert.equal(D, L.peek(list));
 
 L.remove(D);
-// list 
+// list
 assert.equal(null, L.peek(list));
 
 

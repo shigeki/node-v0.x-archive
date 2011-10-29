@@ -17,7 +17,7 @@ To run the tests:
 To build the documentation:
 
   make -f Makefile.cmake doc
- 
+
 To read the documentation:
 
   man doc/node.1

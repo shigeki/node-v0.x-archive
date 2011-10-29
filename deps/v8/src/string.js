@@ -147,7 +147,7 @@ function StringLastIndexOf(pat /* position */) {  // length == 1
 // do anything locale specific.
 function StringLocaleCompare(other) {
   if (%_ArgumentsLength() === 0) return 0;
-  return %StringLocaleCompare(TO_STRING_INLINE(this), 
+  return %StringLocaleCompare(TO_STRING_INLINE(this),
                               TO_STRING_INLINE(other));
 }
 
@@ -243,7 +243,7 @@ function StringReplace(search, replace) {
 // the result.
 function ExpandReplacement(string, subject, matchInfo, builder) {
   var length = string.length;
-  var builder_elements = builder.elements; 
+  var builder_elements = builder.elements;
   var next = %StringIndexOf(string, '$', 0);
   if (next < 0) {
     if (length > 0) builder_elements.push(string);

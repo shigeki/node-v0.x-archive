@@ -798,7 +798,7 @@ name, you can call it anytime, but it makes most sense after forking, in
 the child process. You \fImust\fR call it (or use \f(CW\*(C`EVFLAG_FORKCHECK\*(C'\fR) in the
 child before resuming or calling \f(CW\*(C`ev_run\*(C'\fR.
 .Sp
-Again, you \fIhave\fR to call it on \fIany\fR loop that you want to re-use after 
+Again, you \fIhave\fR to call it on \fIany\fR loop that you want to re-use after
 a fork, \fIeven if you do not plan to use the loop in the parent\fR. This is
 because some kernel interfaces *cough* \fIkqueue\fR *cough* do funny things
 during fork.
@@ -3184,7 +3184,7 @@ used).
 \&   struct ev_loop *loop_hi = ev_default_init (0);
 \&   struct ev_loop *loop_lo = 0;
 \&   ev_embed embed;
-\&   
+\&
 \&   // see if there is a chance of getting one that works
 \&   // (remember that a flags value of 0 means autodetection)
 \&   loop_lo = ev_embeddable_backends () & ev_recommended_backends ()
@@ -3210,7 +3210,7 @@ kqueue implementation). Store the kqueue/socket\-only event loop in
 \&   struct ev_loop *loop = ev_default_init (0);
 \&   struct ev_loop *loop_socket = 0;
 \&   ev_embed embed;
-\&   
+\&
 \&   if (ev_supported_backends () & ~ev_recommended_backends () & EVBACKEND_KQUEUE)
 \&     if ((loop_socket = ev_loop_new (EVBACKEND_KQUEUE))
 \&       {
@@ -3990,7 +3990,7 @@ Example: use a functor object as callback.
 \&       ...
 \&     }
 \&   }
-\&    
+\&
 \&   myfunctor f;
 \&
 \&   ev::io w;

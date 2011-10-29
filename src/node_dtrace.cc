@@ -126,7 +126,7 @@ Handle<Value> DTRACE_NET_SOCKET_READ(const Arguments& args) {
   SLURP_CONNECTION(args[0], conn);
 
   if (!args[1]->IsNumber()) {
-    return (ThrowException(Exception::Error(String::New("expected " 
+    return (ThrowException(Exception::Error(String::New("expected "
       "argument 1 to be number of bytes"))));
   }
 
@@ -147,7 +147,7 @@ Handle<Value> DTRACE_NET_SOCKET_WRITE(const Arguments& args) {
   SLURP_CONNECTION(args[0], conn);
 
   if (!args[1]->IsNumber()) {
-    return (ThrowException(Exception::Error(String::New("expected " 
+    return (ThrowException(Exception::Error(String::New("expected "
       "argument 1 to be number of bytes"))));
   }
 

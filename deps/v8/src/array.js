@@ -140,7 +140,7 @@ function Join(array, length, separator, convert) {
       return %StringBuilderConcat(elements, elements_length, '');
     }
     // Non-empty separator case.
-    // If the first element is a number then use the heuristic that the 
+    // If the first element is a number then use the heuristic that the
     // remaining elements are also likely to be numbers.
     if (!IS_NUMBER(array[0])) {
       for (var i = 0; i < length; i++) {
@@ -148,7 +148,7 @@ function Join(array, length, separator, convert) {
         if (!IS_STRING(e)) e = convert(e);
         elements[i] = e;
       }
-    } else { 
+    } else {
       for (var i = 0; i < length; i++) {
         var e = array[i];
         if (IS_NUMBER(e)) elements[i] = %_NumberToString(e);
@@ -157,9 +157,9 @@ function Join(array, length, separator, convert) {
           elements[i] = e;
         }
       }
-    }   
+    }
     var result = %_FastAsciiArrayJoin(elements, separator);
-    if (!IS_UNDEFINED(result)) return result;   
+    if (!IS_UNDEFINED(result)) return result;
 
     return %StringBuilderJoin(elements, length, separator);
   } finally {
@@ -171,7 +171,7 @@ function Join(array, length, separator, convert) {
 
 
 function ConvertToString(x) {
-  // Assumes x is a non-string. 
+  // Assumes x is a non-string.
   if (IS_NUMBER(x)) return %_NumberToString(x);
   if (IS_BOOLEAN(x)) return x ? 'true' : 'false';
   return (IS_NULL_OR_UNDEFINED(x)) ? '' : %ToString(%DefaultString(x));

@@ -210,8 +210,8 @@ function BasicSerializeArray(value, stack, builder) {
       builder.push(",");
       val = value[i];
       if (IS_NUMBER(val)) {
-        builder.push(NUMBER_IS_FINITE(val) 
-                     ? %_NumberToString(val) 
+        builder.push(NUMBER_IS_FINITE(val)
+                     ? %_NumberToString(val)
                      : "null");
       } else {
         var before = builder.length;
@@ -232,7 +232,7 @@ function BasicSerializeArray(value, stack, builder) {
     }
   }
   stack.pop();
-  builder.push("]"); 
+  builder.push("]");
 }
 
 

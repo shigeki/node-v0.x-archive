@@ -6,7 +6,7 @@ var errors = 0;
 server = net.Server(function (socket) {
 
   socket.on('error', function () {
-    errors++; 
+    errors++;
   });
 
 });

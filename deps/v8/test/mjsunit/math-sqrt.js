@@ -29,7 +29,7 @@
 
 function test(expected_sqrt, value) {
   assertEquals(expected_sqrt, Math.sqrt(value));
-  if (isFinite(value)) { 
+  if (isFinite(value)) {
     assertEquals(expected_sqrt, Math.pow(value, 0.5));
   }
 }

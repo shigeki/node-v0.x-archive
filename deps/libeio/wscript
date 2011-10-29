@@ -69,7 +69,7 @@ def configure(conf):
     }
   """)
 
-  conf.check_cc(msg="Checking for sendfile(2)" , define_name="HAVE_SENDFILE" , fragment=""" 
+  conf.check_cc(msg="Checking for sendfile(2)" , define_name="HAVE_SENDFILE" , fragment="""
     # include <sys/types.h>
     #if __linux
     # include <sys/sendfile.h>

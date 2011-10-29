@@ -9,7 +9,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
- 
+
 int tsize = 1000 * 1048576;
 const char *path = "/tmp/wt.dat";
 

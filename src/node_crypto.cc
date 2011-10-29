@@ -1446,7 +1446,7 @@ class Cipher : public ObjectWrap {
 
   static Handle<Value> CipherInitIv(const Arguments& args) {
     Cipher *cipher = ObjectWrap::Unwrap<Cipher>(args.This());
-    
+
     HandleScope scope;
 
     cipher->incomplete_base64=NULL;
@@ -1478,7 +1478,7 @@ class Cipher : public ObjectWrap {
     assert(iv_written == iv_len);
 
     String::Utf8Value cipherType(args[0]->ToString());
-      
+
     bool r = cipher->CipherInitIv(*cipherType, key_buf,key_len,iv_buf,iv_len);
 
     delete [] key_buf;
@@ -1769,7 +1769,7 @@ class Decipher : public ObjectWrap {
 
   static Handle<Value> DecipherInit(const Arguments& args) {
     Decipher *cipher = ObjectWrap::Unwrap<Decipher>(args.This());
-    
+
     HandleScope scope;
 
     cipher->incomplete_utf8=NULL;
@@ -1792,7 +1792,7 @@ class Decipher : public ObjectWrap {
     assert(key_written == key_len);
 
     String::Utf8Value cipherType(args[0]->ToString());
-      
+
     bool r = cipher->DecipherInit(*cipherType, key_buf,key_len);
 
     delete [] key_buf;
@@ -1806,7 +1806,7 @@ class Decipher : public ObjectWrap {
 
   static Handle<Value> DecipherInitIv(const Arguments& args) {
     Decipher *cipher = ObjectWrap::Unwrap<Decipher>(args.This());
-    
+
     HandleScope scope;
 
     cipher->incomplete_utf8=NULL;
@@ -1840,7 +1840,7 @@ class Decipher : public ObjectWrap {
     assert(iv_written == iv_len);
 
     String::Utf8Value cipherType(args[0]->ToString());
-      
+
     bool r = cipher->DecipherInitIv(*cipherType, key_buf,key_len,iv_buf,iv_len);
 
     delete [] key_buf;
@@ -2197,7 +2197,7 @@ class Hmac : public ObjectWrap {
     }
 
     int r;
-  
+
     if( Buffer::HasInstance(args[0])) {
       Local<Object> buffer_obj = args[0]->ToObject();
       char *buffer_data = Buffer::Data(buffer_obj);

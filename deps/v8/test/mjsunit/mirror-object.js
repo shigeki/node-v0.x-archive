@@ -130,7 +130,7 @@ function testObjectMirror(obj, cls_name, ctor_name, hasSpecialProperties) {
           assertTrue(typeof(fromJSON.properties[i].attributes) === 'undefined', 'Unexpected serialized attributes');
         }
 
-        // Lookup the serialized object from the handle reference.        
+        // Lookup the serialized object from the handle reference.
         var o = refs.lookup(fromJSON.properties[i].ref);
         assertTrue(o != void 0, 'Referenced object is not serialized');
 

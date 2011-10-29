@@ -24,7 +24,7 @@ if(NOT SHARED_V8)
   if(V8_GDBJIT)
     set(v8_gdbjit gdbjit=on)
   endif()
-  
+
   if(${node_platform} MATCHES darwin)
     execute_process(COMMAND hwprefs cpu_count OUTPUT_VARIABLE cpu_count)
   elseif(${node_platform} MATCHES linux)
@@ -54,28 +54,28 @@ if(NOT SHARED_V8)
   if(CMAKE_VERSION VERSION_GREATER 2.8 OR CMAKE_VERSION VERSION_EQUAL 2.8)
     # use ExternalProject for CMake >2.8
     include(ExternalProject)
-    
+
     ExternalProject_Add(v8_extprj
       URL ${PROJECT_SOURCE_DIR}/deps/v8
-      
+
       BUILD_IN_SOURCE True
       BUILD_COMMAND sh -c "${compile_cmd}"
       SOURCE_DIR ${PROJECT_BINARY_DIR}/deps/v8
       # ignore this stuff, it's not needed for building v8 but ExternalProject
       # demands these steps
-      
+
       CONFIGURE_COMMAND "true" # fake configure
       INSTALL_COMMAND "true" # fake install
       )
-    
+
     add_dependencies(node v8_extprj)
   else()
     # copy v8 sources inefficiently with CMake versions <2.8
     file(GLOB_RECURSE v8_sources RELATIVE ${PROJECT_SOURCE_DIR} deps/v8/*)
-    
+
     if(NOT ${in_source_build})
       file(MAKE_DIRECTORY ${PROJECT_BINARY_DIR}/deps/v8)
-      
+
       foreach(FILE ${v8_sources})
         add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/${FILE}
           COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PROJECT_SOURCE_DIR}/${FILE} ${PROJECT_BINARY_DIR}/${FILE}

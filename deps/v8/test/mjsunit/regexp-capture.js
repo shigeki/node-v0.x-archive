@@ -39,16 +39,16 @@ assertEquals(0, "y".search(/(x)?\1y/));
 assertEquals("z", "y".replace(/(x)?\1y/, "z"));
 assertEquals("", "y".replace(/(x)?y/, "$1"));
 assertEquals("undefined", "y".replace(/(x)?\1y/,
-    function($0, $1){ 
-        return String($1); 
+    function($0, $1){
+        return String($1);
     }));
-assertEquals("undefined", "y".replace(/(x)?y/, 
-    function($0, $1){ 
-        return String($1); 
+assertEquals("undefined", "y".replace(/(x)?y/,
+    function($0, $1){
+        return String($1);
     }));
-assertEquals("undefined", "y".replace(/(x)?y/, 
-    function($0, $1){ 
-        return $1; 
+assertEquals("undefined", "y".replace(/(x)?y/,
+    function($0, $1){
+        return $1;
     }));
 
 // See https://bugzilla.mozilla.org/show_bug.cgi?id=476146
