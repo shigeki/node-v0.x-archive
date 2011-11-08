@@ -276,7 +276,6 @@ Local<Value> FSError(int errorno,
   FSReqWrap* req_wrap = new FSReqWrap();                          \
   int r = uv_fs_##func(uv_default_loop(), &req_wrap->req_,        \
       __VA_ARGS__, After);                                        \
-  assert(r == 0);                                                 \
   req_wrap->object_->Set(oncomplete_sym, callback);               \
   req_wrap->Dispatched();                                         \
   if (r < 0) {                                                    \
