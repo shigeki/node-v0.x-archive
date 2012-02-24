@@ -1400,6 +1400,11 @@ UV_EXTERN uv_err_t uv_dlclose(uv_lib_t library);
 UV_EXTERN uv_err_t uv_dlsym(uv_lib_t library, const char* name, void** ptr);
 
 /*
+ * Retrieves an error message of dynamic linking loaders.
+ */
+UV_EXTERN char* uv_dlerror();
+
+/*
  * The mutex functions return 0 on success, -1 on error
  * (unless the return type is void, of course).
  */

@@ -61,3 +61,13 @@ uv_err_t uv_dlsym(uv_lib_t library, const char* name, void** ptr) {
   *ptr = (void*) proc;
   return uv_ok_;
 }
+
+
+char* uv_dlerror(){
+  char* buf = NULL;
+  FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                 FORMAT_MESSAGE_IGNORE_INSERTS, NULL, GetLastError(),
+                 MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), (LPSTR)&buf, 0, NULL);
+  return buf;
+}
+

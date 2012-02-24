@@ -67,3 +67,8 @@ uv_err_t uv_dlsym(uv_lib_t library, const char* name, void** ptr) {
   *ptr = (void*) address;
   return uv_ok_;
 }
+
+
+char* uv_dlerror() {
+  return dlerror();
+}
