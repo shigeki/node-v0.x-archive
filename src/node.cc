@@ -813,6 +813,23 @@ static const char* get_uv_errno_message(int errorno) {
   return uv_strerror(err);
 }
 
+static bool get_uv_dlerror_message(char* error_msg, int size) {
+  int r;
+  char *msg;
+  if(( msg = uv_dlerror()) != NULL) {
+    r = snprintf(error_msg, size, "%s", msg);
+    if(r <= 0 || r >= size) {
+      return false;
+    }
+#ifdef __POSIX__
+    free(msg);
+#else // Windows
+    LocalFree(msg);
+#endif
+  }
+  return true;
+}
+
 
 // hack alert! copy of ErrnoException, tuned for uv errors
 Local<Value> UVException(int errorno,
@@ -1581,9 +1598,23 @@ Handle<Value> DLOpen(const v8::Arguments& args) {
 
   err = uv_dlopen(*filename, &lib);
   if (err.code != UV_OK) {
+    char dlerror_msg[1024];
+    if(!get_uv_dlerror_message(dlerror_msg, sizeof dlerror_msg)) {
+      Local<Value> exception =
+        Exception::Error(String::New("Out of memory."));
+      return exception;
+    }
+    if(dlerror_msg == NULL) {
+      snprintf(dlerror_msg, sizeof dlerror_msg, "%s", "Unable to load shared library ");
+    }
+#ifdef __POSIX__
     Local<Value> exception = Exception::Error(
-        String::Concat(String::New("Unable to load shared library "),
+        String::New(dlerror_msg));
+#else // Windows
+    Local<Value> exception = Exception::Error(
+        String::Concat(String::New(dlerror_msg),
         args[0]->ToString()));
+#endif    
     return ThrowException(exception);
   }
 
