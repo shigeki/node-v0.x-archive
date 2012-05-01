@@ -74,9 +74,9 @@ using v8::Undefined;
 using v8::Value;
 
 static Persistent<Function> tcpConstructor;
-static Persistent<String> family_symbol;
-static Persistent<String> address_symbol;
-static Persistent<String> port_symbol;
+static Persistent<String> family_sym;
+static Persistent<String> address_sym;
+static Persistent<String> port_sym;
 static Persistent<String> oncomplete_sym;
 static Persistent<String> onconnection_sym;
 
@@ -130,9 +130,9 @@ void TCPWrap::Initialize(Handle<Object> target) {
 
   tcpConstructor = Persistent<Function>::New(t->GetFunction());
 
-  family_symbol = NODE_PSYMBOL("family");
-  address_symbol = NODE_PSYMBOL("address");
-  port_symbol = NODE_PSYMBOL("port");
+  family_sym = NODE_PSYMBOL("family");
+  address_sym = NODE_PSYMBOL("address");
+  port_sym = NODE_PSYMBOL("port");
   onconnection_sym = NODE_PSYMBOL("onconnection");
   oncomplete_sym = NODE_PSYMBOL("oncomplete");
 
@@ -204,9 +204,9 @@ Handle<Value> TCPWrap::GetSockName(const Arguments& args) {
       abort();
     }
 
-    sockname->Set(port_symbol, Integer::New(port));
-    sockname->Set(family_symbol, String::New(family_name));
-    sockname->Set(address_symbol, String::New(ip));
+    sockname->Set(port_sym, Integer::New(port));
+    sockname->Set(family_sym, String::New(family_name));
+    sockname->Set(address_sym, String::New(ip));
   }
 
   return scope.Close(sockname);
@@ -246,9 +246,9 @@ Handle<Value> TCPWrap::GetPeerName(const Arguments& args) {
       abort();
     }
 
-    sockname->Set(port_symbol, Integer::New(port));
-    sockname->Set(family_symbol, Integer::New(family));
-    sockname->Set(address_symbol, String::New(ip));
+    sockname->Set(port_sym, Integer::New(port));
+    sockname->Set(family_sym, Integer::New(family));
+    sockname->Set(address_sym, String::New(ip));
   }
 
   return scope.Close(sockname);
