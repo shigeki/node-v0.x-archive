@@ -75,6 +75,8 @@ using v8::Value;
 
 static Persistent<Function> tcpConstructor;
 static Persistent<String> family_sym;
+static Persistent<String> ipv4_sym;
+static Persistent<String> ipv6_sym;
 static Persistent<String> address_sym;
 static Persistent<String> port_sym;
 static Persistent<String> oncomplete_sym;
@@ -131,6 +133,8 @@ void TCPWrap::Initialize(Handle<Object> target) {
   tcpConstructor = Persistent<Function>::New(t->GetFunction());
 
   family_sym = NODE_PSYMBOL("family");
+  ipv4_sym = NODE_PSYMBOL("IPv4");
+  ipv6_sym = NODE_PSYMBOL("IPv6");
   address_sym = NODE_PSYMBOL("address");
   port_sym = NODE_PSYMBOL("port");
   onconnection_sym = NODE_PSYMBOL("onconnection");
@@ -174,7 +178,6 @@ Handle<Value> TCPWrap::GetSockName(const Arguments& args) {
   int family;
   int port;
   char ip[INET6_ADDRSTRLEN];
-  const char *family_name;
 
   UNWRAP
 
@@ -183,30 +186,30 @@ Handle<Value> TCPWrap::GetSockName(const Arguments& args) {
                              reinterpret_cast<sockaddr*>(&address),
                              &addrlen);
 
-  Local<Object> sockname = Object::New();
-  if (r != 0) {
+  if (r) {
     SetErrno(uv_last_error(uv_default_loop()));
-  } else {
-    family = address.ss_family;
+    return Null();
+  }
 
-    if (family == AF_INET) {
-      struct sockaddr_in* addrin = (struct sockaddr_in*)&address;
-      uv_inet_ntop(AF_INET, &(addrin->sin_addr), ip, INET6_ADDRSTRLEN);
-      port = ntohs(addrin->sin_port);
-      family_name = "IPv4";
-    } else if (family == AF_INET6) {
-      struct sockaddr_in6* addrin6 = (struct sockaddr_in6*)&address;
-      uv_inet_ntop(AF_INET6, &(addrin6->sin6_addr), ip, INET6_ADDRSTRLEN);
-      port = ntohs(addrin6->sin6_port);
-      family_name = "IPv6";
-    } else {
-      assert(0 && "bad address family");
-      abort();
-    }
-
-    sockname->Set(port_sym, Integer::New(port));
-    sockname->Set(family_sym, String::New(family_name));
+  Local<Object> sockname = Object::New();
+  family = address.ss_family;
+  
+  if (family == AF_INET) {
+    struct sockaddr_in* addrin = (struct sockaddr_in*)&address;
+    uv_inet_ntop(AF_INET, &(addrin->sin_addr), ip, sizeof ip);
+    port = ntohs(addrin->sin_port);
     sockname->Set(address_sym, String::New(ip));
+    sockname->Set(port_sym, Integer::New(port));
+    sockname->Set(family_sym, ipv4_sym);
+  } else if (family == AF_INET6) {
+    struct sockaddr_in6* addrin6 = (struct sockaddr_in6*)&address;
+    uv_inet_ntop(AF_INET6, &(addrin6->sin6_addr), ip, sizeof ip);
+    port = ntohs(addrin6->sin6_port);
+    sockname->Set(address_sym, String::New(ip));
+    sockname->Set(port_sym, Integer::New(port));
+    sockname->Set(family_sym, ipv6_sym);
+  } else {
+    sockname->Set(address_sym, String::Empty());
   }
 
   return scope.Close(sockname);
