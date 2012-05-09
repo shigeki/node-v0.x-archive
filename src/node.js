@@ -477,6 +477,7 @@
 
   function NativeModule(id) {
     this.filename = id + '.js';
+    this.nativename = id + '_native';
     this.id = id;
     this.exports = {};
     this.loaded = false;
@@ -534,8 +535,8 @@
     var source = NativeModule.getSource(this.id);
     source = NativeModule.wrap(source);
 
-    var fn = runInThisContext(source, this.filename, true);
-    fn(this.exports, NativeModule.require, this, this.filename);
+    var fn = runInThisContext(source, this.nativename, true);
+    fn(this.exports, NativeModule.require, this, this.nativename);
 
     this.loaded = true;
   };

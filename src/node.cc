@@ -1168,12 +1168,21 @@ void DisplayExceptionLine (TryCatch &try_catch) {
   }
 }
 
+bool is_native_module(const char* filename) {
+  const char* native_module_postfix = "_native";
+  int pos = strlen(filename) - strlen(native_module_postfix);
+  if(pos > 0 && strcmp(filename+pos, native_module_postfix) == 0) {
+    return true;
+  } else {
+    return false;
+  }
+}
 
 static void ReportException(TryCatch &try_catch, bool show_line) {
   HandleScope scope;
   Handle<Message> message = try_catch.Message();
-
-  if (show_line) DisplayExceptionLine(try_catch);
+  String::Utf8Value filename(message->GetScriptResourceName());
+  if (show_line && !is_native_module(*filename)) DisplayExceptionLine(try_catch);
 
   String::Utf8Value trace(try_catch.StackTrace());
 
