@@ -1678,7 +1678,9 @@ void FatalException(TryCatch &try_catch) {
   uint32_t length = listener_array->Length();
   // Report and exit if process has no "uncaughtException" listener
   if (length == 0) {
-    ReportException(try_catch, true);
+    bool show_line = !(try_catch.Exception()->ToObject()
+		       ->Get(String::New("noshow_line"))->BooleanValue());
+    ReportException(try_catch, show_line);
     exit(1);
   }
 
