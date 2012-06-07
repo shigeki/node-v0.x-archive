@@ -1686,12 +1686,12 @@ Handle<Value> Hrtime(const v8::Arguments& args) {
     Local<Array> inArray = Local<Array>::Cast(args[0]);
     uint64_t seconds = inArray->Get(0)->Uint32Value();
     uint64_t nanos = inArray->Get(1)->Uint32Value();
-    t -= (seconds * NANOS_PER_SEC) + nanos;
+    t -= (seconds * (uint64_t) NANOS_PER_SEC) + nanos;
   }
 
   Local<Array> tuple = Array::New(2);
-  tuple->Set(0, Integer::NewFromUnsigned(t / NANOS_PER_SEC));
-  tuple->Set(1, Integer::NewFromUnsigned(t % NANOS_PER_SEC));
+  tuple->Set(0, Integer::NewFromUnsigned(t / (uint64_t) NANOS_PER_SEC));
+  tuple->Set(1, Integer::NewFromUnsigned(t % (uint64_t) NANOS_PER_SEC));
 
   return scope.Close(tuple);
 }
