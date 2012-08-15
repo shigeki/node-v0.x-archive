@@ -55,9 +55,10 @@ static int uv_timer_compare(uv_timer_t* a, uv_timer_t* b) {
     return -1;
   if (a->due > b->due)
     return 1;
-  if ((intptr_t)a < (intptr_t)b)
+  /* compare start_id when both timeouts are equal */
+  if (a->start_id < b->start_id)
     return -1;
-  if ((intptr_t)a > (intptr_t)b)
+  if (a->start_id > b->start_id)
     return 1;
   return 0;
 }
@@ -71,8 +72,6 @@ int uv_timer_init(uv_loop_t* loop, uv_timer_t* handle) {
   handle->timer_cb = NULL;
   handle->repeat = 0;
 
-  loop->counters.timer_init++;
-
   return 0;
 }
 
@@ -85,6 +84,7 @@ void uv_timer_endgame(uv_loop_t* loop, uv_timer_t* handle) {
   }
 }
 
+__declspec(thread) static int64_t start_counter = 0;
 
 int uv_timer_start(uv_timer_t* handle, uv_timer_cb timer_cb, int64_t timeout,
     int64_t repeat) {
@@ -98,6 +98,8 @@ int uv_timer_start(uv_timer_t* handle, uv_timer_cb timer_cb, int64_t timeout,
   handle->timer_cb = timer_cb;
   handle->due = loop->time + timeout;
   handle->repeat = repeat;
+  /* start_id is the second index to be compared in uv__timer_cmp() */
+  handle->start_id = start_counter++; 
   handle->flags |= UV_HANDLE_ACTIVE;
   uv__handle_start(handle);
 
@@ -132,21 +134,9 @@ int uv_timer_again(uv_timer_t* handle) {
     return -1;
   }
 
-  if (handle->flags & UV_HANDLE_ACTIVE) {
-    RB_REMOVE(uv_timer_tree_s, &loop->timers, handle);
-    handle->flags &= ~UV_HANDLE_ACTIVE;
-    uv__handle_stop(handle);
-  }
-
   if (handle->repeat) {
-    handle->due = loop->time + handle->repeat;
-
-    if (RB_INSERT(uv_timer_tree_s, &loop->timers, handle) != NULL) {
-      uv_fatal_error(ERROR_INVALID_DATA, "RB_INSERT");
-    }
-
-    handle->flags |= UV_HANDLE_ACTIVE;
-    uv__handle_start(handle);
+    uv_timer_stop(handle);
+    uv_timer_start(handle, handle->timer_cb, handle->repeat, handle->repeat);
   }
 
   return 0;
@@ -201,26 +191,12 @@ void uv_process_timers(uv_loop_t* loop) {
   uv_timer_t* timer;
 
   /* Call timer callbacks */
-  for (timer = RB_MIN(uv_timer_tree_s, &loop->timers);
-       timer != NULL && timer->due <= loop->time;
-       timer = RB_MIN(uv_timer_tree_s, &loop->timers)) {
-    RB_REMOVE(uv_timer_tree_s, &loop->timers, timer);
+  while ((timer = RB_MIN(uv_timer_tree_s, &loop->timers))) {
+    if (timer->due > loop->time)
+      break;
 
-    if (timer->repeat != 0) {
-      /* If it is a repeating timer, reschedule with repeat timeout. */
-      timer->due += timer->repeat;
-      if (timer->due < loop->time) {
-        timer->due = loop->time;
-      }
-      if (RB_INSERT(uv_timer_tree_s, &loop->timers, timer) != NULL) {
-        uv_fatal_error(ERROR_INVALID_DATA, "RB_INSERT");
-      }
-    } else {
-      /* If non-repeating, mark the timer as inactive. */
-      timer->flags &= ~UV_HANDLE_ACTIVE;
-      uv__handle_stop(timer);
-    }
-
+    uv_timer_stop(timer);
+    uv_timer_again(timer);
     timer->timer_cb((uv_timer_t*) timer, 0);
   }
 }

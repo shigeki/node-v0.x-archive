@@ -150,3 +150,45 @@ TEST_IMPL(timer_start_twice) {
 
   return 0;
 }
+
+static int order_cb_called = 0;
+
+static void order_cb_a(uv_timer_t *handle, int status) {
+  ASSERT(order_cb_called++ == *(int*)handle->data);
+}
+
+static void order_cb_b(uv_timer_t *handle, int status) {
+  ASSERT(order_cb_called++ == *(int*)handle->data);
+}
+
+TEST_IMPL(timer_order) {
+  int r, first = 0, second = 1;
+  uv_timer_t handle_a, handle_b;
+  
+  r = uv_timer_init(uv_default_loop(), &handle_a);
+  r = uv_timer_init(uv_default_loop(), &handle_b);
+
+  /* Test for starting handle_a then handle_b */
+  handle_a.data = &first;
+  r = uv_timer_start(&handle_a, order_cb_a, 0, 0);
+  handle_b.data = &second;
+  r = uv_timer_start(&handle_b, order_cb_b, 0, 0);
+  r = uv_run(uv_default_loop());
+  
+  ASSERT(order_cb_called == 2);
+
+  r = uv_timer_stop(&handle_a);
+  r = uv_timer_stop(&handle_b);
+
+  /* Test for starting handle_b then handle_a */
+  order_cb_called = 0;
+  handle_b.data = &first;
+  r = uv_timer_start(&handle_b, order_cb_b, 0, 0);
+  handle_a.data = &second;
+  r = uv_timer_start(&handle_a, order_cb_a, 0, 0);
+  r = uv_run(uv_default_loop());
+  
+  ASSERT(order_cb_called == 2);
+  
+  return 0;
+}
