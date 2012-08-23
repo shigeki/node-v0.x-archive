@@ -930,9 +930,16 @@ done:
 
 static uv_err_t uv__kill(HANDLE process_handle, int signum) {
   switch (signum) {
+    case SIGINT:
+    case SIGBREAK:
+    case SIGHUP:
+    case SIGWINCH: {
+      if (uv__signal_dispatch(signum)) {
+	return uv_ok_;
+      }
+    }    
     case SIGTERM:
-    case SIGKILL:
-    case SIGINT: {
+    case SIGKILL: {
       /* Unconditionally terminate the process. On Windows, killed processes */
       /* normally return 1. */
       DWORD error, status;
