@@ -2389,13 +2389,15 @@ static void ParseArgs(int argc, char **argv) {
                strcmp(arg, "--print") == 0  ||
                strcmp(arg, "-pe") == 0      ||
                strcmp(arg, "-p") == 0) {
-      if (argc <= i + 1) {
+      if (strchr(arg, 'e') != NULL && argc <= i + 1) {
         fprintf(stderr, "Error: %s requires an argument\n", arg);
         exit(1);
       }
       print_eval = print_eval || strchr(arg, 'p') != NULL;
       argv[i] = const_cast<char*>("");
-      eval_string = argv[++i];
+      if (argv[i+1] != NULL) {
+        eval_string = argv[++i];
+      }
     } else if (strcmp(arg, "--interactive") == 0 || strcmp(arg, "-i") == 0) {
       force_repl = true;
       argv[i] = const_cast<char*>("");
