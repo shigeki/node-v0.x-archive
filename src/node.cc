@@ -1691,6 +1691,11 @@ Handle<Value> Hrtime(const v8::Arguments& args) {
   return scope.Close(tuple);
 }
 
+Handle<Value> Now(const Arguments& args) {
+  HandleScope scope;
+  unsigned int now = (unsigned int)uv_now(uv_default_loop())/1000;
+  return scope.Close(Integer::New(now));
+}
 
 typedef void (UV_DYNAMIC* extInit)(Handle<Object> exports);
 
@@ -2253,6 +2258,7 @@ Handle<Object> SetupProcessObject(int argc, char *argv[]) {
   NODE_SET_METHOD(process, "_debugEnd", DebugEnd);
 
   NODE_SET_METHOD(process, "hrtime", Hrtime);
+  NODE_SET_METHOD(process, "now", Now);
 
   NODE_SET_METHOD(process, "dlopen", DLOpen);
 
