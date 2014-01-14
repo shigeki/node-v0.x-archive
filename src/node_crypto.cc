@@ -1876,6 +1876,7 @@ void Connection::New(const FunctionCallbackInfo<Value>& args) {
     SSL_set_info_callback(conn->ssl_, SSLInfoCallback);
 
   InitNPN(sc, conn);
+  InitALPN(sc, conn);
 
 #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
   if (is_server) {

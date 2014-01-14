@@ -150,6 +150,7 @@ void TLSCallbacks::InitSSL() {
 #endif  // SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
 
   InitNPN(sc_, this);
+  InitALPN(sc_, this);
 
   if (is_server()) {
     SSL_set_accept_state(ssl_);
@@ -681,6 +682,7 @@ int TLSCallbacks::SelectSNIContextCallback(SSL* s, int* ad, void* arg) {
 
     SecureContext* sc = Unwrap<SecureContext>(ctx.As<Object>());
     InitNPN(sc, p);
+    InitALPN(sc, p);
     SSL_set_SSL_CTX(s, sc->ctx_);
   }
 
