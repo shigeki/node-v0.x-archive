@@ -879,6 +879,11 @@ void DefineOpenSSLConstants(Handle<Object> target) {
 #define NPN_ENABLED 1
     NODE_DEFINE_CONSTANT(target, NPN_ENABLED);
 #endif
+
+#ifndef OPENSSL_NO_NEXTPROTONEG
+#define ALPN_ENABLED 1
+    NODE_DEFINE_CONSTANT(target, ALPN_ENABLED);
+#endif
 }
 
 void DefineSystemConstants(Handle<Object> target) {

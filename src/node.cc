@@ -2154,6 +2154,13 @@ static Handle<Object> GetFeatures() {
 #endif
   obj->Set(FIXED_ONE_BYTE_STRING(node_isolate, "tls_npn"), tls_npn);
 
+#ifndef OPENSSL_NO_NEXTPROTONEG
+  Local<Boolean> tls_alpn = True(node_isolate);
+#else
+  Local<Boolean> tls_alpn = False(node_isolate);
+#endif
+  obj->Set(FIXED_ONE_BYTE_STRING(node_isolate, "tls_alpn"), tls_alpn);
+
 #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
   Local<Boolean> tls_sni = True(node_isolate);
 #else

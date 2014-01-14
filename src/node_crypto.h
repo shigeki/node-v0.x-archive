@@ -30,6 +30,10 @@
 #include "node_buffer.h"
 #endif
 
+#ifndef OPENSSL_NO_NEXTPROTONEG
+#include "node_buffer.h"
+#endif
+
 #include "env.h"
 #include "async-wrap.h"
 #include "async-wrap-inl.h"
@@ -153,6 +157,11 @@ class SSLWrap {
     npn_protos_.Dispose();
     selected_npn_proto_.Dispose();
 #endif
+
+#ifndef OPENSSL_NO_NEXTPROTONEG
+    alpn_protos_.Dispose();
+    selected_alpn_proto_.Dispose();
+#endif
   }
 
   inline SSL* ssl() const { return ssl_; }
@@ -162,6 +171,7 @@ class SSLWrap {
 
  protected:
   static void InitNPN(SecureContext* sc, Base* base);
+  static void InitALPN(SecureContext* sc, Base* base);
   static void AddMethods(v8::Handle<v8::FunctionTemplate> t);
 
   static SSL_SESSION* GetSessionCallback(SSL* s,
@@ -201,6 +211,19 @@ class SSLWrap {
                                      void* arg);
 #endif  // OPENSSL_NPN_NEGOTIATED
 
+
+#ifndef OPENSSL_NO_NEXTPROTONEG
+  static void GetALPNNegotiatedProto(
+				     const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void SetALPNProtocols(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static int SelectALPNCallback(SSL* s,
+				const unsigned char** out,
+				unsigned char* outlen,
+				const unsigned char* in,
+				unsigned int inlen,
+				void* arg);
+#endif  //OPENSSL_NO_NEXTPROTONEG
+
   inline Environment* ssl_env() const {
     return env_;
   }
@@ -216,6 +239,11 @@ class SSLWrap {
   v8::Persistent<v8::Object> npn_protos_;
   v8::Persistent<v8::Value> selected_npn_proto_;
 #endif  // OPENSSL_NPN_NEGOTIATED
+
+#ifndef OPENSSL_NO_NEXTPROTONEG
+  v8::Persistent<v8::Object> alpn_protos_;
+  v8::Persistent<v8::Value> selected_alpn_proto_;
+#endif // OPENSSL_NO_NEXTPROTONEG
 
   friend class SecureContext;
 };
@@ -238,6 +266,11 @@ class Connection : public SSLWrap<Connection>, public AsyncWrap {
 #ifdef OPENSSL_NPN_NEGOTIATED
   v8::Persistent<v8::Object> npnProtos_;
   v8::Persistent<v8::Value> selectedNPNProto_;
+#endif
+
+#ifndef OPENSSL_NO_NEXTPROTONEG
+  v8::Persistent<v8::Object> alpnProtos_;
+  v8::Persistent<v8::Value> selectedALPNProto_;
 #endif
 
 #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB

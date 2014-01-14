@@ -181,7 +181,7 @@
 #                './deps/openssl/openssl.gyp:openssl',
 
                 # For tests
-                './deps/openssl/openssl.gyp:openssl-cli'
+#                './deps/openssl/openssl.gyp:openssl-cli'
               ],
             }]]
         }, {

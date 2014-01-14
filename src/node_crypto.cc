@@ -115,6 +115,8 @@ template class SSLWrap<TLSCallbacks>;
 template void SSLWrap<TLSCallbacks>::AddMethods(Handle<FunctionTemplate> t);
 template void SSLWrap<TLSCallbacks>::InitNPN(SecureContext* sc,
                                              TLSCallbacks* base);
+template void SSLWrap<TLSCallbacks>::InitALPN(SecureContext* sc,
+                                             TLSCallbacks* base);
 template SSL_SESSION* SSLWrap<TLSCallbacks>::GetSessionCallback(
     SSL* s,
     unsigned char* key,
@@ -141,6 +143,15 @@ template int SSLWrap<TLSCallbacks>::SelectNextProtoCallback(
     void* arg);
 #endif
 
+#ifndef OPENSSL_NO_NEXTPROTONEG
+template int SSLWrap<TLSCallbacks>::SelectALPNCallback(
+						       SSL* s,
+						       const unsigned char** out,
+						       unsigned char* outlen,
+						       const unsigned char* in,
+						       unsigned int inlen,
+						       void* arg);
+#endif
 
 static void crypto_threadid_cb(CRYPTO_THREADID* tid) {
   CRYPTO_THREADID_set_numeric(tid, uv_thread_self());
@@ -860,6 +871,11 @@ void SSLWrap<Base>::AddMethods(Handle<FunctionTemplate> t) {
   NODE_SET_PROTOTYPE_METHOD(t, "getNegotiatedProtocol", GetNegotiatedProto);
   NODE_SET_PROTOTYPE_METHOD(t, "setNPNProtocols", SetNPNProtocols);
 #endif  // OPENSSL_NPN_NEGOTIATED
+
+#ifndef OPENSSL_NO_NEXTPROTONEG
+  NODE_SET_PROTOTYPE_METHOD(t, "getALPNNegotiatedProtocol", GetALPNNegotiatedProto);
+  NODE_SET_PROTOTYPE_METHOD(t, "setALPNProtocols", SetALPNProtocols);
+#endif  // OPENSSL_NO_NEXTPROTONEG
 }
 
 
@@ -881,6 +897,18 @@ void SSLWrap<Base>::InitNPN(SecureContext* sc, Base* base) {
   }
 }
 
+template <class Base>
+void SSLWrap<Base>::InitALPN(SecureContext* sc, Base* base) {
+  if (base->is_server()) {
+#ifndef OPENSSL_NO_NEXTPROTONEG
+    // Server should select ALPN protocol from list of advertised by client
+    SSL_CTX_set_alpn_select_cb(
+			       sc->ctx_,
+			       SelectALPNCallback,
+			       base);
+#endif  // OPENSSL_NO_NEXTPROTONEG
+  }
+}
 
 template <class Base>
 SSL_SESSION* SSLWrap<Base>::GetSessionCallback(SSL* s,
@@ -1456,6 +1484,91 @@ void SSLWrap<Base>::SetNPNProtocols(const FunctionCallbackInfo<Value>& args) {
 #endif  // OPENSSL_NPN_NEGOTIATED
 
 
+#ifndef OPENSSL_NO_NEXTPROTONEG
+typedef struct tlsextalpnctx_st {
+  unsigned char *data;
+  unsigned short len;
+} tlsextalpnctx;
+
+template <class Base>
+int SSLWrap<Base>::SelectALPNCallback(SSL* s,
+				      const unsigned char** out,
+				      unsigned char* outlen,
+				      const unsigned char* in,
+				      unsigned int inlen,
+				      void* arg) {
+
+    Base* w = static_cast<Base*>(arg);
+
+    if (w->alpn_protos_.IsEmpty()) {
+      // We should at least select one protocol
+      // If server is using ALPN
+      *out = reinterpret_cast<unsigned char*>(const_cast<char*>("http/1.1"));
+      *outlen = 8;
+      return SSL_TLSEXT_ERR_OK;
+    }
+
+    Local<Object> obj = PersistentToLocal(node_isolate, w->alpn_protos_);
+    const unsigned char* alpn_protos =
+      reinterpret_cast<const unsigned char*>(Buffer::Data(obj));
+    size_t len = Buffer::Length(obj);
+
+    int status = SSL_select_next_proto(
+				       (unsigned char**) out, outlen, alpn_protos, len, in, inlen);
+
+    switch (status) {
+      case OPENSSL_NPN_NO_OVERLAP:
+        // Need to send no_application_protocol alert
+	// but current openssl does not support it yet.
+	return SSL_TLSEXT_ERR_ALERT_WARNING;
+      case OPENSSL_NPN_NEGOTIATED:
+        return SSL_TLSEXT_ERR_OK;
+      default:
+        return SSL_TLSEXT_ERR_ALERT_FATAL;
+    }
+}
+
+
+template <class Base>
+void SSLWrap<Base>::GetALPNNegotiatedProto(
+					   const FunctionCallbackInfo<v8::Value>& args) {
+  HandleScope scope(node_isolate);
+  Base* w = Unwrap<Base>(args.This());
+
+  const unsigned char* alpn_proto;
+  unsigned int alpn_proto_len;
+
+  SSL_get0_alpn_selected(w->ssl_, &alpn_proto, &alpn_proto_len);
+
+    if (!alpn_proto)
+      return args.GetReturnValue().Set(false);
+
+    args.GetReturnValue().Set(
+			      OneByteString(node_isolate, alpn_proto, alpn_proto_len));
+}
+
+
+template <class Base>
+void SSLWrap<Base>::SetALPNProtocols(const FunctionCallbackInfo<v8::Value>& args) {
+  HandleScope scope(node_isolate);
+
+  if (args.Length() < 1 || !Buffer::HasInstance(args[0]))
+    return ThrowTypeError("Must give a Buffer as first argument");
+  Base* w = Unwrap<Base>(args.This());
+
+  if (w->is_client()) {
+    const unsigned char* alpn_protos =
+          reinterpret_cast<const unsigned char*>(Buffer::Data(args[0]));
+    unsigned alpn_protos_len = Buffer::Length(args[0]);
+    int r = SSL_set_alpn_protos(w->ssl_, alpn_protos, alpn_protos_len);
+    assert(r == 0);
+  } else {
+    w->alpn_protos_.Reset(node_isolate, args[0].As<Object>());
+  }
+}
+#endif // OPENSSL_NO_NEXTPROTONEG
+
+
 void Connection::OnClientHelloParseEnd(void* arg) {
   Connection* conn = static_cast<Connection*>(arg);
 
@@ -1634,6 +1747,14 @@ void Connection::Initialize(Environment* env, Handle<Object> target) {
                             Connection::SetNPNProtocols);
 #endif
 
+#ifndef OPENSSL_NO_NEXTPROTONEG
+  NODE_SET_PROTOTYPE_METHOD(t,
+                            "getALPNNegotiatedProtocol",
+                            Connection::GetALPNNegotiatedProto);
+  NODE_SET_PROTOTYPE_METHOD(t,
+                            "setALPNProtocols",
+                            Connection::SetALPNProtocols);
+#endif
 
 #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
   NODE_SET_PROTOTYPE_METHOD(t, "getServername", Connection::GetServername);
@@ -1718,6 +1839,7 @@ int Connection::SelectSNIContextCallback_(SSL *s, int *ad, void* arg) {
         conn->sniContext_.Reset(node_isolate, ret);
         SecureContext* sc = Unwrap<SecureContext>(ret.As<Object>());
         InitNPN(sc, conn);
+	InitALPN(sc, conn);
         SSL_set_SSL_CTX(s, sc->ctx_);
       } else {
         return SSL_TLSEXT_ERR_NOACK;
