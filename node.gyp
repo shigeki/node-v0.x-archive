@@ -178,7 +178,7 @@
           'conditions': [
             [ 'node_shared_openssl=="false"', {
               'dependencies': [
-                './deps/openssl/openssl.gyp:openssl',
+#                './deps/openssl/openssl.gyp:openssl',
 
                 # For tests
                 './deps/openssl/openssl.gyp:openssl-cli'
@@ -281,6 +281,12 @@
           'dependencies': [ 'deps/uv/uv.gyp:libuv' ],
         }],
 
+        [ 'OS=="linux"', {
+         'include_dirs': ['<(PRODUCT_DIR)/../../deps/openssl/include'],
+         'libraries': [
+         '<(PRODUCT_DIR)/../../deps/openssl/libssl.a <(PRODUCT_DIR)/../../deps/openssl/libcrypto.a'
+         ]
+        }],
         [ 'OS=="win"', {
           'sources': [
             'src/res/node.rc',
