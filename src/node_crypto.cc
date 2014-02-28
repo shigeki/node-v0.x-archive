@@ -898,6 +898,7 @@ void SSLWrap<Base>::AddMethods(Environment* env, Handle<FunctionTemplate> t) {
   NODE_SET_PROTOTYPE_METHOD(t, "isInitFinished", IsInitFinished);
   NODE_SET_PROTOTYPE_METHOD(t, "verifyError", VerifyError);
   NODE_SET_PROTOTYPE_METHOD(t, "getCurrentCipher", GetCurrentCipher);
+  NODE_SET_PROTOTYPE_METHOD(t, "getKeyExchangeInfo", GetKeyExchangeInfo);
   NODE_SET_PROTOTYPE_METHOD(t, "endParser", EndParser);
   NODE_SET_PROTOTYPE_METHOD(t, "renegotiate", Renegotiate);
   NODE_SET_PROTOTYPE_METHOD(t, "shutdown", Shutdown);
@@ -1432,6 +1433,33 @@ void SSLWrap<Base>::GetCurrentCipher(const FunctionCallbackInfo<Value>& args) {
   const char* cipher_version = SSL_CIPHER_get_version(c);
   info->Set(env->version_string(),
             OneByteString(args.GetIsolate(), cipher_version));
+  args.GetReturnValue().Set(info);
+}
+
+
+template <class Base>
+void SSLWrap<Base>::GetKeyExchangeInfo(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(args.GetIsolate());
+
+  Base* w = Unwrap<Base>(args.This());
+//  Environment* env = w->ssl_env();
+
+  Local<Object> info = Object::New();
+  EVP_PKEY *key;
+  SSL_get_server_tmp_key(w->ssl_, &key);
+  switch (EVP_PKEY_id(key)) {
+    case EVP_PKEY_RSA:
+     fprintf(stderr, "RSA, %d bits\n", EVP_PKEY_bits(key));
+    break;
+    case EVP_PKEY_DH:
+     fprintf(stderr, "DH, %d bits\n", EVP_PKEY_bits(key));
+    break;
+    case EVP_PKEY_EC:
+     fprintf(stderr, "ECDH, %d bits\n", EVP_PKEY_bits(key));
+    break;
+  }
+
+  EVP_PKEY_free(key);
   args.GetReturnValue().Set(info);
 }
 
