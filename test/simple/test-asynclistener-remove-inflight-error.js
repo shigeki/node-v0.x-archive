@@ -21,8 +21,7 @@
 
 var common = require('../common');
 var assert = require('assert');
-
-function onAsync0() { }
+var tracing = require('tracing');
 
 var set = 0;
 var asyncNoHandleError = {
@@ -31,13 +30,13 @@ var asyncNoHandleError = {
   }
 }
 
-var key = process.addAsyncListener(onAsync0, asyncNoHandleError);
+var key = tracing.addAsyncListener(asyncNoHandleError);
 
 process.nextTick(function() {
   throw 1;
 });
 
-process.removeAsyncListener(key);
+tracing.removeAsyncListener(key);
 
 var uncaughtFired = false;
 process.on('uncaughtException', function() {

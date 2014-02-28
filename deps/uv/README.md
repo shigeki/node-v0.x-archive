@@ -93,7 +93,14 @@ Run:
 Run:
 
     $ ./gyp_uv.py -f xcode
-    $ xcodebuild -project uv.xcodeproj -configuration Release -target All
+    $ xcodebuild -ARCHS="x86_64" -project uv.xcodeproj \
+         -configuration Release -target All
+
+Note to OS X users:
+
+Make sure that you specify the architecture you wish to build for in the
+"ARCHS" flag. You can specify more than one by delimiting with a space
+(e.g. "x86_64 i386").
 
 ### Android
 
@@ -126,7 +133,7 @@ OS X using the GCC or XCode toolchain.
 
 Solaris 121 and later using GCC toolchain.
 
-## patches
+## Patches
 
 See the [guidelines for contributing][].
 

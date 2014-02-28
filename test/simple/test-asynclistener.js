@@ -24,17 +24,20 @@ var assert = require('assert');
 var net = require('net');
 var fs = require('fs');
 var dgram = require('dgram');
+var tracing = require('tracing');
 
-var addListener = process.addAsyncListener;
-var removeListener = process.removeAsyncListener;
+var addListener = tracing.addAsyncListener;
+var removeListener = tracing.removeAsyncListener;
 var actualAsync = 0;
 var expectAsync = 0;
 
-function onAsync() {
-  actualAsync++;
-}
+var callbacks = {
+  create: function onAsync() {
+    actualAsync++;
+  }
+};
 
-var listener = process.createAsyncListener(onAsync);
+var listener = tracing.createAsyncListener(callbacks);
 
 process.on('exit', function() {
   process._rawDebug('expected', expectAsync);

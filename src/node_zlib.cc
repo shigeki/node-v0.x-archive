@@ -39,6 +39,7 @@
 
 namespace node {
 
+using v8::Array;
 using v8::Context;
 using v8::FunctionCallbackInfo;
 using v8::FunctionTemplate;
@@ -73,7 +74,7 @@ class ZCtx : public AsyncWrap {
  public:
 
   ZCtx(Environment* env, Local<Object> wrap, node_zlib_mode mode)
-      : AsyncWrap(env, wrap),
+      : AsyncWrap(env, wrap, AsyncWrap::PROVIDER_ZLIB),
         chunk_size_(0),
         dictionary_(NULL),
         dictionary_len_(0),
@@ -86,27 +87,36 @@ class ZCtx : public AsyncWrap {
         strategy_(0),
         windowBits_(0),
         write_in_progress_(false),
+        pending_close_(false),
         refs_(0) {
     MakeWeak<ZCtx>(this);
   }
 
 
   ~ZCtx() {
+    assert(!write_in_progress_ && "write in progress");
     Close();
   }
 
   void Close() {
-    assert(!write_in_progress_ && "write in progress");
+    if (write_in_progress_) {
+      pending_close_ = true;
+      return;
+    }
+
+    pending_close_ = false;
     assert(init_done_ && "close before init");
     assert(mode_ <= UNZIP);
 
     if (mode_ == DEFLATE || mode_ == GZIP || mode_ == DEFLATERAW) {
       (void)deflateEnd(&strm_);
-      node_isolate->AdjustAmountOfExternalAllocatedMemory(-kDeflateContextSize);
+      env()->isolate()
+          ->AdjustAmountOfExternalAllocatedMemory(-kDeflateContextSize);
     } else if (mode_ == INFLATE || mode_ == GUNZIP || mode_ == INFLATERAW ||
                mode_ == UNZIP) {
       (void)inflateEnd(&strm_);
-      node_isolate->AdjustAmountOfExternalAllocatedMemory(-kInflateContextSize);
+      env()->isolate()
+          ->AdjustAmountOfExternalAllocatedMemory(-kInflateContextSize);
     }
     mode_ = NONE;
 
@@ -118,15 +128,18 @@ class ZCtx : public AsyncWrap {
 
 
   static void Close(const FunctionCallbackInfo<Value>& args) {
-    HandleScope scope(node_isolate);
+    Environment* env = Environment::GetCurrent(args.GetIsolate());
+    HandleScope scope(env->isolate());
     ZCtx* ctx = Unwrap<ZCtx>(args.This());
     ctx->Close();
   }
 
 
   // write(flush, in, in_off, in_len, out, out_off, out_len)
+  template <bool async>
   static void Write(const FunctionCallbackInfo<Value>& args) {
-    HandleScope scope(node_isolate);
+    Environment* env = Environment::GetCurrent(args.GetIsolate());
+    HandleScope scope(env->isolate());
     assert(args.Length() == 7);
 
     ZCtx* ctx = Unwrap<ZCtx>(args.This());
@@ -134,6 +147,7 @@ class ZCtx : public AsyncWrap {
     assert(ctx->mode_ != NONE && "already finalized");
 
     assert(!ctx->write_in_progress_ && "write already in progress");
+    assert(!ctx->pending_close_ && "close is pending");
     ctx->write_in_progress_ = true;
     ctx->Ref();
 
@@ -167,7 +181,7 @@ class ZCtx : public AsyncWrap {
       in_off = args[2]->Uint32Value();
       in_len = args[3]->Uint32Value();
 
-      assert(in_off + in_len <= Buffer::Length(in_buf));
+      assert(Buffer::IsWithinBounds(in_off, in_len, Buffer::Length(in_buf)));
       in = reinterpret_cast<Bytef *>(Buffer::Data(in_buf) + in_off);
     }
 
@@ -175,7 +189,7 @@ class ZCtx : public AsyncWrap {
     Local<Object> out_buf = args[4]->ToObject();
     out_off = args[5]->Uint32Value();
     out_len = args[6]->Uint32Value();
-    assert(out_off + out_len <= Buffer::Length(out_buf));
+    assert(Buffer::IsWithinBounds(out_off, out_len, Buffer::Length(out_buf)));
     out = reinterpret_cast<Bytef *>(Buffer::Data(out_buf) + out_off);
 
     // build up the work request
@@ -190,12 +204,40 @@ class ZCtx : public AsyncWrap {
     // set this so that later on, I can easily tell how much was written.
     ctx->chunk_size_ = out_len;
 
+    if (!async) {
+      // sync version
+      Process(work_req);
+      if (CheckError(ctx))
+        AfterSync(ctx, args);
+      return;
+    }
+
+    // async version
     uv_queue_work(ctx->env()->event_loop(),
                   work_req,
                   ZCtx::Process,
                   ZCtx::After);
 
     args.GetReturnValue().Set(ctx->object());
+  }
+
+
+  static void AfterSync(ZCtx* ctx, const FunctionCallbackInfo<Value>& args) {
+    Environment* env = Environment::GetCurrent(args.GetIsolate());
+    HandleScope scope(env->isolate());
+    Local<Integer> avail_out = Integer::New(ctx->strm_.avail_out,
+                                            env->isolate());
+    Local<Integer> avail_in = Integer::New(ctx->strm_.avail_in,
+                                           env->isolate());
+
+    ctx->write_in_progress_ = false;
+
+    Local<Array> result = Array::New(2);
+    result->Set(0, avail_in);
+    result->Set(1, avail_out);
+    args.GetReturnValue().Set(result);
+
+    ctx->Unref();
   }
 
 
@@ -249,6 +291,31 @@ class ZCtx : public AsyncWrap {
     // or shift the queue and call Process.
   }
 
+
+  static bool CheckError(ZCtx* ctx) {
+    // Acceptable error states depend on the type of zlib stream.
+    switch (ctx->err_) {
+    case Z_OK:
+    case Z_STREAM_END:
+    case Z_BUF_ERROR:
+      // normal statuses, not fatal
+      break;
+    case Z_NEED_DICT:
+      if (ctx->dictionary_ == NULL)
+        ZCtx::Error(ctx, "Missing dictionary");
+      else
+        ZCtx::Error(ctx, "Bad dictionary");
+      return false;
+    default:
+      // something else.
+      ZCtx::Error(ctx, "Zlib error");
+      return false;
+    }
+
+    return true;
+  }
+
+
   // v8 land!
   static void After(uv_work_t* work_req, int status) {
     assert(status == 0);
@@ -259,28 +326,13 @@ class ZCtx : public AsyncWrap {
     HandleScope handle_scope(env->isolate());
     Context::Scope context_scope(env->context());
 
-    // Acceptable error states depend on the type of zlib stream.
-    switch (ctx->err_) {
-      case Z_OK:
-      case Z_STREAM_END:
-      case Z_BUF_ERROR:
-        // normal statuses, not fatal
-        break;
-      case Z_NEED_DICT:
-        if (ctx->dictionary_ == NULL) {
-          ZCtx::Error(ctx, "Missing dictionary");
-        } else {
-          ZCtx::Error(ctx, "Bad dictionary");
-        }
-        return;
-      default:
-        // something else.
-        ZCtx::Error(ctx, "Zlib error");
-        return;
-    }
+    if (!CheckError(ctx))
+      return;
 
-    Local<Integer> avail_out = Integer::New(ctx->strm_.avail_out, node_isolate);
-    Local<Integer> avail_in = Integer::New(ctx->strm_.avail_in, node_isolate);
+    Local<Integer> avail_out = Integer::New(ctx->strm_.avail_out,
+                                            env->isolate());
+    Local<Integer> avail_in = Integer::New(ctx->strm_.avail_in,
+                                           env->isolate());
 
     ctx->write_in_progress_ = false;
 
@@ -289,6 +341,8 @@ class ZCtx : public AsyncWrap {
     ctx->MakeCallback(env->callback_string(), ARRAY_SIZE(args), args);
 
     ctx->Unref();
+    if (ctx->pending_close_)
+      ctx->Close();
   }
 
   static void Error(ZCtx* ctx, const char* message) {
@@ -301,9 +355,9 @@ class ZCtx : public AsyncWrap {
       message = ctx->strm_.msg;
     }
 
-    HandleScope scope(node_isolate);
+    HandleScope scope(env->isolate());
     Local<Value> args[2] = {
-      OneByteString(node_isolate, message),
+      OneByteString(env->isolate(), message),
       Number::New(ctx->err_)
     };
     ctx->MakeCallback(env->onerror_string(), ARRAY_SIZE(args), args);
@@ -311,6 +365,8 @@ class ZCtx : public AsyncWrap {
     // no hope of rescue.
     ctx->write_in_progress_ = false;
     ctx->Unref();
+    if (ctx->pending_close_)
+      ctx->Close();
   }
 
   static void New(const FunctionCallbackInfo<Value>& args) {
@@ -318,12 +374,12 @@ class ZCtx : public AsyncWrap {
     Environment* env = Environment::GetCurrent(args.GetIsolate());
 
     if (args.Length() < 1 || !args[0]->IsInt32()) {
-      return ThrowTypeError("Bad argument");
+      return env->ThrowTypeError("Bad argument");
     }
     node_zlib_mode mode = static_cast<node_zlib_mode>(args[0]->Int32Value());
 
     if (mode < DEFLATE || mode > UNZIP) {
-      return ThrowTypeError("Bad argument");
+      return env->ThrowTypeError("Bad argument");
     }
 
     new ZCtx(env, args.This(), mode);
@@ -331,7 +387,8 @@ class ZCtx : public AsyncWrap {
 
   // just pull the ints out of the args and call the other Init
   static void Init(const FunctionCallbackInfo<Value>& args) {
-    HandleScope scope(node_isolate);
+    Environment* env = Environment::GetCurrent(args.GetIsolate());
+    HandleScope scope(env->isolate());
 
     assert((args.Length() == 4 || args.Length() == 5) &&
            "init(windowBits, level, memLevel, strategy, [dictionary])");
@@ -371,7 +428,8 @@ class ZCtx : public AsyncWrap {
   }
 
   static void Params(const FunctionCallbackInfo<Value>& args) {
-    HandleScope scope(node_isolate);
+    Environment* env = Environment::GetCurrent(args.GetIsolate());
+    HandleScope scope(env->isolate());
 
     assert(args.Length() == 2 && "params(level, strategy)");
 
@@ -381,7 +439,8 @@ class ZCtx : public AsyncWrap {
   }
 
   static void Reset(const FunctionCallbackInfo<Value> &args) {
-    HandleScope scope(node_isolate);
+    Environment* env = Environment::GetCurrent(args.GetIsolate());
+    HandleScope scope(env->isolate());
 
     ZCtx* ctx = Unwrap<ZCtx>(args.This());
 
@@ -426,16 +485,16 @@ class ZCtx : public AsyncWrap {
                                  ctx->windowBits_,
                                  ctx->memLevel_,
                                  ctx->strategy_);
-        node_isolate->
-                    AdjustAmountOfExternalAllocatedMemory(kDeflateContextSize);
+        ctx->env()->isolate()
+            ->AdjustAmountOfExternalAllocatedMemory(kDeflateContextSize);
         break;
       case INFLATE:
       case GUNZIP:
       case INFLATERAW:
       case UNZIP:
         ctx->err_ = inflateInit2(&ctx->strm_, ctx->windowBits_);
-        node_isolate->
-                    AdjustAmountOfExternalAllocatedMemory(kInflateContextSize);
+        ctx->env()->isolate()
+            ->AdjustAmountOfExternalAllocatedMemory(kInflateContextSize);
         break;
       default:
         assert(0 && "wtf?");
@@ -544,25 +603,29 @@ class ZCtx : public AsyncWrap {
   int windowBits_;
   uv_work_t work_req_;
   bool write_in_progress_;
+  bool pending_close_;
   unsigned int refs_;
 };
 
 
 void InitZlib(Handle<Object> target,
               Handle<Value> unused,
-              Handle<Context> context) {
+              Handle<Context> context,
+              void* priv) {
+  Environment* env = Environment::GetCurrent(context);
   Local<FunctionTemplate> z = FunctionTemplate::New(ZCtx::New);
 
   z->InstanceTemplate()->SetInternalFieldCount(1);
 
-  NODE_SET_PROTOTYPE_METHOD(z, "write", ZCtx::Write);
+  NODE_SET_PROTOTYPE_METHOD(z, "write", ZCtx::Write<true>);
+  NODE_SET_PROTOTYPE_METHOD(z, "writeSync", ZCtx::Write<false>);
   NODE_SET_PROTOTYPE_METHOD(z, "init", ZCtx::Init);
   NODE_SET_PROTOTYPE_METHOD(z, "close", ZCtx::Close);
   NODE_SET_PROTOTYPE_METHOD(z, "params", ZCtx::Params);
   NODE_SET_PROTOTYPE_METHOD(z, "reset", ZCtx::Reset);
 
-  z->SetClassName(FIXED_ONE_BYTE_STRING(node_isolate, "Zlib"));
-  target->Set(FIXED_ONE_BYTE_STRING(node_isolate, "Zlib"), z->GetFunction());
+  z->SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "Zlib"));
+  target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "Zlib"), z->GetFunction());
 
   // valid flush values.
   NODE_DEFINE_CONSTANT(target, Z_NO_FLUSH);
@@ -602,10 +665,10 @@ void InitZlib(Handle<Object> target,
   NODE_DEFINE_CONSTANT(target, INFLATERAW);
   NODE_DEFINE_CONSTANT(target, UNZIP);
 
-  target->Set(FIXED_ONE_BYTE_STRING(node_isolate, "ZLIB_VERSION"),
-              FIXED_ONE_BYTE_STRING(node_isolate, ZLIB_VERSION));
+  target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "ZLIB_VERSION"),
+              FIXED_ONE_BYTE_STRING(env->isolate(), ZLIB_VERSION));
 }
 
 }  // namespace node
 
-NODE_MODULE_CONTEXT_AWARE(node_zlib, node::InitZlib)
+NODE_MODULE_CONTEXT_AWARE_BUILTIN(zlib, node::InitZlib)

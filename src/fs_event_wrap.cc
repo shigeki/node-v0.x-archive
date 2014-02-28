@@ -65,7 +65,10 @@ class FSEventWrap: public HandleWrap {
 
 
 FSEventWrap::FSEventWrap(Environment* env, Handle<Object> object)
-    : HandleWrap(env, object, reinterpret_cast<uv_handle_t*>(&handle_)) {
+    : HandleWrap(env,
+                 object,
+                 reinterpret_cast<uv_handle_t*>(&handle_),
+                 AsyncWrap::PROVIDER_FSEVENTWRAP) {
   initialized_ = false;
 }
 
@@ -78,14 +81,16 @@ FSEventWrap::~FSEventWrap() {
 void FSEventWrap::Initialize(Handle<Object> target,
                              Handle<Value> unused,
                              Handle<Context> context) {
+  Environment* env = Environment::GetCurrent(context);
+
   Local<FunctionTemplate> t = FunctionTemplate::New(New);
   t->InstanceTemplate()->SetInternalFieldCount(1);
-  t->SetClassName(FIXED_ONE_BYTE_STRING(node_isolate, "FSEvent"));
+  t->SetClassName(env->fsevent_string());
 
   NODE_SET_PROTOTYPE_METHOD(t, "start", Start);
   NODE_SET_PROTOTYPE_METHOD(t, "close", Close);
 
-  target->Set(FIXED_ONE_BYTE_STRING(node_isolate, "FSEvent"), t->GetFunction());
+  target->Set(env->fsevent_string(), t->GetFunction());
 }
 
 
@@ -98,12 +103,13 @@ void FSEventWrap::New(const FunctionCallbackInfo<Value>& args) {
 
 
 void FSEventWrap::Start(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   FSEventWrap* wrap = Unwrap<FSEventWrap>(args.This());
 
   if (args.Length() < 1 || !args[0]->IsString()) {
-    return ThrowTypeError("Bad arguments");
+    return env->ThrowTypeError("Bad arguments");
   }
 
   String::Utf8Value path(args[0]);
@@ -155,7 +161,7 @@ void FSEventWrap::OnEvent(uv_fs_event_t* handle, const char* filename,
   // unreasonable, right? Still, we should revisit this before v1.0.
   Local<String> event_string;
   if (status) {
-    event_string = String::Empty(node_isolate);
+    event_string = String::Empty(env->isolate());
   } else if (events & UV_RENAME) {
     event_string = env->rename_string();
   } else if (events & UV_CHANGE) {
@@ -166,13 +172,13 @@ void FSEventWrap::OnEvent(uv_fs_event_t* handle, const char* filename,
   }
 
   Local<Value> argv[] = {
-    Integer::New(status, node_isolate),
+    Integer::New(status, env->isolate()),
     event_string,
-    Null(node_isolate)
+    Null(env->isolate())
   };
 
   if (filename != NULL) {
-    argv[2] = OneByteString(node_isolate, filename);
+    argv[2] = OneByteString(env->isolate(), filename);
   }
 
   wrap->MakeCallback(env->onchange_string(), ARRAY_SIZE(argv), argv);
@@ -180,7 +186,8 @@ void FSEventWrap::OnEvent(uv_fs_event_t* handle, const char* filename,
 
 
 void FSEventWrap::Close(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   FSEventWrap* wrap = Unwrap<FSEventWrap>(args.This());
 
@@ -193,4 +200,4 @@ void FSEventWrap::Close(const FunctionCallbackInfo<Value>& args) {
 
 }  // namespace node
 
-NODE_MODULE_CONTEXT_AWARE(node_fs_event_wrap, node::FSEventWrap::Initialize)
+NODE_MODULE_CONTEXT_AWARE_BUILTIN(fs_event_wrap, node::FSEventWrap::Initialize)

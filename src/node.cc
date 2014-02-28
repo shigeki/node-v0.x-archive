@@ -130,6 +130,9 @@ static bool use_debug_agent = false;
 static bool debug_wait_connect = false;
 static int debug_port = 5858;
 static bool v8_is_profiling = false;
+static node_module* modpending;
+static node_module* modlist_builtin;
+static node_module* modlist_addon;
 
 // used by C++ modules as well
 bool no_deprecation = false;
@@ -139,8 +142,7 @@ static double prog_start_time;
 static bool debugger_running;
 static uv_async_t dispatch_debug_messages_async;
 
-// Declared in node_internals.h
-Isolate* node_isolate = NULL;
+static Isolate* node_isolate = NULL;
 
 
 class ArrayBufferAllocator : public ArrayBuffer::Allocator {
@@ -184,8 +186,8 @@ void ArrayBufferAllocator::Free(void* data, size_t length) {
 
 
 static void CheckImmediate(uv_check_t* handle, int status) {
-  HandleScope scope(node_isolate);
   Environment* env = Environment::from_immediate_check_handle(handle);
+  HandleScope scope(env->isolate());
   Context::Scope context_scope(env->context());
   MakeCallback(env, env->process_object(), env->immediate_callback_string());
 }
@@ -674,45 +676,46 @@ const char *signo_string(int signo) {
 }
 
 
-Local<Value> ErrnoException(int errorno,
+Local<Value> ErrnoException(Isolate* isolate,
+                            int errorno,
                             const char *syscall,
                             const char *msg,
                             const char *path) {
-  Environment* env = Environment::GetCurrent(node_isolate);
+  Environment* env = Environment::GetCurrent(isolate);
 
   Local<Value> e;
-  Local<String> estring = OneByteString(node_isolate, errno_string(errorno));
+  Local<String> estring = OneByteString(env->isolate(), errno_string(errorno));
   if (msg == NULL || msg[0] == '\0') {
     msg = strerror(errorno);
   }
-  Local<String> message = OneByteString(node_isolate, msg);
+  Local<String> message = OneByteString(env->isolate(), msg);
 
   Local<String> cons1 =
-      String::Concat(estring, FIXED_ONE_BYTE_STRING(node_isolate, ", "));
+      String::Concat(estring, FIXED_ONE_BYTE_STRING(env->isolate(), ", "));
   Local<String> cons2 = String::Concat(cons1, message);
 
   if (path) {
     Local<String> cons3 =
-        String::Concat(cons2, FIXED_ONE_BYTE_STRING(node_isolate, " '"));
+        String::Concat(cons2, FIXED_ONE_BYTE_STRING(env->isolate(), " '"));
     Local<String> cons4 =
-        String::Concat(cons3, String::NewFromUtf8(node_isolate, path));
+        String::Concat(cons3, String::NewFromUtf8(env->isolate(), path));
     Local<String> cons5 =
-        String::Concat(cons4, FIXED_ONE_BYTE_STRING(node_isolate, "'"));
+        String::Concat(cons4, FIXED_ONE_BYTE_STRING(env->isolate(), "'"));
     e = Exception::Error(cons5);
   } else {
     e = Exception::Error(cons2);
   }
 
   Local<Object> obj = e->ToObject();
-  obj->Set(env->errno_string(), Integer::New(errorno, node_isolate));
+  obj->Set(env->errno_string(), Integer::New(errorno, env->isolate()));
   obj->Set(env->code_string(), estring);
 
   if (path != NULL) {
-    obj->Set(env->path_string(), String::NewFromUtf8(node_isolate, path));
+    obj->Set(env->path_string(), String::NewFromUtf8(env->isolate(), path));
   }
 
   if (syscall != NULL) {
-    obj->Set(env->syscall_string(), OneByteString(node_isolate, syscall));
+    obj->Set(env->syscall_string(), OneByteString(env->isolate(), syscall));
   }
 
   return e;
@@ -720,19 +723,20 @@ Local<Value> ErrnoException(int errorno,
 
 
 // hack alert! copy of ErrnoException, tuned for uv errors
-Local<Value> UVException(int errorno,
+Local<Value> UVException(Isolate* isolate,
+                         int errorno,
                          const char *syscall,
                          const char *msg,
                          const char *path) {
-  Environment* env = Environment::GetCurrent(node_isolate);
+  Environment* env = Environment::GetCurrent(isolate);
 
   if (!msg || !msg[0])
     msg = uv_strerror(errorno);
 
-  Local<String> estring = OneByteString(node_isolate, uv_err_name(errorno));
-  Local<String> message = OneByteString(node_isolate, msg);
+  Local<String> estring = OneByteString(env->isolate(), uv_err_name(errorno));
+  Local<String> message = OneByteString(env->isolate(), msg);
   Local<String> cons1 =
-      String::Concat(estring, FIXED_ONE_BYTE_STRING(node_isolate, ", "));
+      String::Concat(estring, FIXED_ONE_BYTE_STRING(env->isolate(), ", "));
   Local<String> cons2 = String::Concat(cons1, message);
 
   Local<Value> e;
@@ -742,23 +746,23 @@ Local<Value> UVException(int errorno,
   if (path) {
 #ifdef _WIN32
     if (strncmp(path, "\\\\?\\UNC\\", 8) == 0) {
-      path_str = String::Concat(FIXED_ONE_BYTE_STRING(node_isolate, "\\\\"),
-                                String::NewFromUtf8(node_isolate, path + 8));
+      path_str = String::Concat(FIXED_ONE_BYTE_STRING(env->isolate(), "\\\\"),
+                                String::NewFromUtf8(env->isolate(), path + 8));
     } else if (strncmp(path, "\\\\?\\", 4) == 0) {
-      path_str = String::NewFromUtf8(node_isolate, path + 4);
+      path_str = String::NewFromUtf8(env->isolate(), path + 4);
     } else {
-      path_str = String::NewFromUtf8(node_isolate, path);
+      path_str = String::NewFromUtf8(env->isolate(), path);
     }
 #else
-    path_str = String::NewFromUtf8(node_isolate, path);
+    path_str = String::NewFromUtf8(env->isolate(), path);
 #endif
 
     Local<String> cons3 =
-        String::Concat(cons2, FIXED_ONE_BYTE_STRING(node_isolate, " '"));
+        String::Concat(cons2, FIXED_ONE_BYTE_STRING(env->isolate(), " '"));
     Local<String> cons4 =
         String::Concat(cons3, path_str);
     Local<String> cons5 =
-        String::Concat(cons4, FIXED_ONE_BYTE_STRING(node_isolate, "'"));
+        String::Concat(cons4, FIXED_ONE_BYTE_STRING(env->isolate(), "'"));
     e = Exception::Error(cons5);
   } else {
     e = Exception::Error(cons2);
@@ -766,7 +770,7 @@ Local<Value> UVException(int errorno,
 
   Local<Object> obj = e->ToObject();
   // TODO(piscisaureus) errno should probably go
-  obj->Set(env->errno_string(), Integer::New(errorno, node_isolate));
+  obj->Set(env->errno_string(), Integer::New(errorno, env->isolate()));
   obj->Set(env->code_string(), estring);
 
   if (path != NULL) {
@@ -774,7 +778,7 @@ Local<Value> UVException(int errorno,
   }
 
   if (syscall != NULL) {
-    obj->Set(env->syscall_string(), OneByteString(node_isolate, syscall));
+    obj->Set(env->syscall_string(), OneByteString(env->isolate(), syscall));
   }
 
   return e;
@@ -806,39 +810,39 @@ static const char *winapi_strerror(const int errorno) {
 }
 
 
-Local<Value> WinapiErrnoException(int errorno,
+Local<Value> WinapiErrnoException(Isolate* isolate,
+                                  int errorno,
                                   const char* syscall,
                                   const char* msg,
                                   const char* path) {
-  Environment* env = Environment::GetCurrent(node_isolate);
-
+  Environment* env = Environment::GetCurrent(isolate);
   Local<Value> e;
   if (!msg || !msg[0]) {
     msg = winapi_strerror(errorno);
   }
-  Local<String> message = OneByteString(node_isolate, msg);
+  Local<String> message = OneByteString(env->isolate(), msg);
 
   if (path) {
     Local<String> cons1 =
-        String::Concat(message, FIXED_ONE_BYTE_STRING(node_isolate, " '"));
+        String::Concat(message, FIXED_ONE_BYTE_STRING(isolate, " '"));
     Local<String> cons2 =
-        String::Concat(cons1, String::NewFromUtf8(node_isolate, path));
+        String::Concat(cons1, String::NewFromUtf8(isolate, path));
     Local<String> cons3 =
-        String::Concat(cons2, FIXED_ONE_BYTE_STRING(node_isolate, "'"));
+        String::Concat(cons2, FIXED_ONE_BYTE_STRING(isolate, "'"));
     e = Exception::Error(cons3);
   } else {
     e = Exception::Error(message);
   }
 
   Local<Object> obj = e->ToObject();
-  obj->Set(env->errno_string(), Integer::New(errorno, node_isolate));
+  obj->Set(env->errno_string(), Integer::New(errorno, isolate));
 
   if (path != NULL) {
-    obj->Set(env->path_string(), String::NewFromUtf8(node_isolate, path));
+    obj->Set(env->path_string(), String::NewFromUtf8(isolate, path));
   }
 
   if (syscall != NULL) {
-    obj->Set(env->syscall_string(), OneByteString(node_isolate, syscall));
+    obj->Set(env->syscall_string(), OneByteString(isolate, syscall));
   }
 
   return e;
@@ -854,14 +858,10 @@ void SetupAsyncListener(const FunctionCallbackInfo<Value>& args) {
   assert(args[1]->IsFunction());
   assert(args[2]->IsFunction());
   assert(args[3]->IsFunction());
-  assert(args[4]->IsFunction());
-  assert(args[5]->IsFunction());
 
   env->set_async_listener_run_function(args[1].As<Function>());
   env->set_async_listener_load_function(args[2].As<Function>());
   env->set_async_listener_unload_function(args[3].As<Function>());
-  env->set_async_listener_push_function(args[4].As<Function>());
-  env->set_async_listener_strip_function(args[5].As<Function>());
 
   Local<Object> async_listener_flag_obj = args[0].As<Object>();
   Environment::AsyncListener* async_listener = env->async_listener();
@@ -876,11 +876,52 @@ void SetupAsyncListener(const FunctionCallbackInfo<Value>& args) {
 }
 
 
+void SetupDomainUse(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+
+  if (env->using_domains())
+    return;
+  env->set_using_domains(true);
+
+  HandleScope scope(env->isolate());
+  Local<Object> process_object = env->process_object();
+
+  Local<String> tick_callback_function_key = env->tick_domain_cb_string();
+  Local<Function> tick_callback_function =
+      process_object->Get(tick_callback_function_key).As<Function>();
+
+  if (!tick_callback_function->IsFunction()) {
+    fprintf(stderr, "process._tickDomainCallback assigned to non-function\n");
+    abort();
+  }
+
+  process_object->Set(env->tick_callback_string(), tick_callback_function);
+  env->set_tick_callback_function(tick_callback_function);
+
+  assert(args[0]->IsArray());
+  assert(args[1]->IsObject());
+
+  env->set_domain_array(args[0].As<Array>());
+
+  Local<Object> domain_flag_obj = args[1].As<Object>();
+  Environment::DomainFlag* domain_flag = env->domain_flag();
+  domain_flag_obj->SetIndexedPropertiesToExternalArrayData(
+      domain_flag->fields(),
+      kExternalUnsignedIntArray,
+      domain_flag->fields_count());
+
+  // Do a little housekeeping.
+  env->process_object()->Delete(
+      FIXED_ONE_BYTE_STRING(args.GetIsolate(), "_setupDomainUse"));
+}
+
+
 void SetupNextTick(const FunctionCallbackInfo<Value>& args) {
   HandleScope handle_scope(args.GetIsolate());
   Environment* env = Environment::GetCurrent(args.GetIsolate());
 
-  assert(args[0]->IsObject() && args[1]->IsFunction());
+  assert(args[0]->IsObject());
+  assert(args[1]->IsFunction());
 
   // Values use to cross communicate with processNextTick.
   Local<Object> tick_info_obj = args[0].As<Object>();
@@ -897,11 +938,122 @@ void SetupNextTick(const FunctionCallbackInfo<Value>& args) {
 }
 
 
+Handle<Value> MakeDomainCallback(Environment* env,
+                                 Handle<Value> recv,
+                                 const Handle<Function> callback,
+                                 int argc,
+                                 Handle<Value> argv[]) {
+  // If you hit this assertion, you forgot to enter the v8::Context first.
+  assert(env->context() == env->isolate()->GetCurrentContext());
+
+  Local<Object> process = env->process_object();
+  Local<Object> object, domain;
+  Local<Value> domain_v;
+
+  TryCatch try_catch;
+  try_catch.SetVerbose(true);
+
+  bool has_async_queue = false;
+
+  if (recv->IsObject()) {
+    object = recv.As<Object>();
+    // TODO(trevnorris): This is sucky for performance. Fix it.
+    has_async_queue = object->Has(env->async_queue_string());
+    if (has_async_queue) {
+      env->async_listener_load_function()->Call(process, 1, &recv);
+
+      if (try_catch.HasCaught())
+        return Undefined(env->isolate());
+    }
+  }
+
+  bool has_domain = false;
+
+  if (!object.IsEmpty()) {
+    domain_v = object->Get(env->domain_string());
+    has_domain = domain_v->IsObject();
+    if (has_domain) {
+      domain = domain_v.As<Object>();
+
+      if (domain->Get(env->disposed_string())->IsTrue()) {
+        // domain has been disposed of.
+        return Undefined(env->isolate());
+      }
+
+      Local<Function> enter =
+          domain->Get(env->enter_string()).As<Function>();
+      assert(enter->IsFunction());
+      enter->Call(domain, 0, NULL);
+
+      if (try_catch.HasCaught()) {
+        return Undefined(env->isolate());
+      }
+    }
+  }
+
+  Local<Value> ret = callback->Call(recv, argc, argv);
+
+  if (try_catch.HasCaught()) {
+    return Undefined(env->isolate());
+  }
+
+  if (has_domain) {
+    Local<Function> exit =
+        domain->Get(env->exit_string()).As<Function>();
+    assert(exit->IsFunction());
+    exit->Call(domain, 0, NULL);
+
+    if (try_catch.HasCaught()) {
+      return Undefined(env->isolate());
+    }
+  }
+
+  if (has_async_queue) {
+    env->async_listener_unload_function()->Call(process, 1, &recv);
+
+    if (try_catch.HasCaught())
+      return Undefined(env->isolate());
+  }
+
+  Environment::TickInfo* tick_info = env->tick_info();
+
+  if (tick_info->last_threw() == 1) {
+    tick_info->set_last_threw(0);
+    return ret;
+  }
+
+  if (tick_info->in_tick()) {
+    return ret;
+  }
+
+  if (tick_info->length() == 0) {
+    tick_info->set_index(0);
+    return ret;
+  }
+
+  tick_info->set_in_tick(true);
+
+  env->tick_callback_function()->Call(process, 0, NULL);
+
+  tick_info->set_in_tick(false);
+
+  if (try_catch.HasCaught()) {
+    tick_info->set_last_threw(true);
+    return Undefined(env->isolate());
+  }
+
+  return ret;
+}
+
+
 Handle<Value> MakeCallback(Environment* env,
-                           Handle<Object> object,
+                           Handle<Value> recv,
                            const Handle<Function> callback,
                            int argc,
                            Handle<Value> argv[]) {
+  if (env->using_domains())
+    return MakeDomainCallback(env, recv, callback, argc, argv);
+
   // If you hit this assertion, you forgot to enter the v8::Context first.
   assert(env->context() == env->isolate()->GetCurrentContext());
 
@@ -911,27 +1063,25 @@ Handle<Value> MakeCallback(Environment* env,
   try_catch.SetVerbose(true);
 
   // TODO(trevnorris): This is sucky for performance. Fix it.
-  bool has_async_queue = object->Has(env->async_queue_string());
+  bool has_async_queue =
+      recv->IsObject() && recv.As<Object>()->Has(env->async_queue_string());
   if (has_async_queue) {
-    Local<Value> argv[] = { object };
-    env->async_listener_load_function()->Call(process, ARRAY_SIZE(argv), argv);
-
+    env->async_listener_load_function()->Call(process, 1, &recv);
     if (try_catch.HasCaught())
-      return Undefined(node_isolate);
+      return Undefined(env->isolate());
   }
 
-  Local<Value> ret = callback->Call(object, argc, argv);
+  Local<Value> ret = callback->Call(recv, argc, argv);
 
   if (try_catch.HasCaught()) {
-    return Undefined(node_isolate);
+    return Undefined(env->isolate());
   }
 
   if (has_async_queue) {
-    Local<Value> val = object.As<Value>();
-    env->async_listener_unload_function()->Call(process, 1, &val);
+    env->async_listener_unload_function()->Call(process, 1, &recv);
 
     if (try_catch.HasCaught())
-      return Undefined(node_isolate);
+      return Undefined(env->isolate());
   }
 
   Environment::TickInfo* tick_info = env->tick_info();
@@ -954,7 +1104,7 @@ Handle<Value> MakeCallback(Environment* env,
 
   if (try_catch.HasCaught()) {
     tick_info->set_last_threw(true);
-    return Undefined(node_isolate);
+    return Undefined(env->isolate());
   }
 
   return ret;
@@ -963,76 +1113,95 @@ Handle<Value> MakeCallback(Environment* env,
 
 // Internal only.
 Handle<Value> MakeCallback(Environment* env,
-                           const Handle<Object> object,
+                           Handle<Object> recv,
                            uint32_t index,
                            int argc,
                            Handle<Value> argv[]) {
-  Local<Function> callback = object->Get(index).As<Function>();
+  Local<Function> callback = recv->Get(index).As<Function>();
   assert(callback->IsFunction());
 
-  return MakeCallback(env, object, callback, argc, argv);
+  return MakeCallback(env, recv.As<Value>(), callback, argc, argv);
 }
 
 
 Handle<Value> MakeCallback(Environment* env,
-                           const Handle<Object> object,
-                           const Handle<String> symbol,
+                           Handle<Object> recv,
+                           Handle<String> symbol,
                            int argc,
                            Handle<Value> argv[]) {
-  Local<Function> callback = object->Get(symbol).As<Function>();
+  Local<Function> callback = recv->Get(symbol).As<Function>();
   assert(callback->IsFunction());
-  return MakeCallback(env, object, callback, argc, argv);
+  return MakeCallback(env, recv.As<Value>(), callback, argc, argv);
 }
 
 
 Handle<Value> MakeCallback(Environment* env,
-                           const Handle<Object> object,
+                           Handle<Object> recv,
                            const char* method,
                            int argc,
                            Handle<Value> argv[]) {
-  Local<String> method_string = OneByteString(node_isolate, method);
-  return MakeCallback(env, object, method_string, argc, argv);
+  Local<String> method_string = OneByteString(env->isolate(), method);
+  return MakeCallback(env, recv, method_string, argc, argv);
 }
 
 
-Handle<Value> MakeCallback(const Handle<Object> object,
+Handle<Value> MakeCallback(Isolate* isolate,
+                           Handle<Object> recv,
                            const char* method,
                            int argc,
                            Handle<Value> argv[]) {
-  Local<Context> context = object->CreationContext();
+  HandleScope handle_scope(isolate);
+  Local<Context> context = recv->CreationContext();
   Environment* env = Environment::GetCurrent(context);
   Context::Scope context_scope(context);
-  HandleScope handle_scope(env->isolate());
-  return handle_scope.Close(MakeCallback(env, object, method, argc, argv));
+  return handle_scope.Close(MakeCallback(env, recv, method, argc, argv));
 }
 
 
-Handle<Value> MakeCallback(const Handle<Object> object,
-                           const Handle<String> symbol,
+Handle<Value> MakeCallback(Isolate* isolate,
+                           Handle<Object> recv,
+                           Handle<String> symbol,
                            int argc,
                            Handle<Value> argv[]) {
-  Local<Context> context = object->CreationContext();
+  HandleScope handle_scope(isolate);
+  Local<Context> context = recv->CreationContext();
   Environment* env = Environment::GetCurrent(context);
   Context::Scope context_scope(context);
-  HandleScope handle_scope(env->isolate());
-  return handle_scope.Close(MakeCallback(env, object, symbol, argc, argv));
+  return handle_scope.Close(MakeCallback(env, recv, symbol, argc, argv));
 }
 
 
-Handle<Value> MakeCallback(const Handle<Object> object,
-                           const Handle<Function> callback,
+Handle<Value> MakeCallback(Isolate* isolate,
+                           Handle<Object> recv,
+                           Handle<Function> callback,
                            int argc,
                            Handle<Value> argv[]) {
-  Local<Context> context = object->CreationContext();
+  HandleScope handle_scope(isolate);
+  Local<Context> context = recv->CreationContext();
   Environment* env = Environment::GetCurrent(context);
   Context::Scope context_scope(context);
-  HandleScope handle_scope(env->isolate());
-  return handle_scope.Close(MakeCallback(env, object, callback, argc, argv));
+  return handle_scope.Close(
+      MakeCallback(env, recv.As<Value>(), callback, argc, argv));
 }
 
 
-enum encoding ParseEncoding(Handle<Value> encoding_v, enum encoding _default) {
-  HandleScope scope(node_isolate);
+Handle<Value> MakeDomainCallback(Handle<Object> recv,
+                                 Handle<Function> callback,
+                                 int argc,
+                                 Handle<Value> argv[]) {
+  Local<Context> context = recv->CreationContext();
+  Environment* env = Environment::GetCurrent(context);
+  Context::Scope context_scope(context);
+  HandleScope handle_scope(env->isolate());
+  return handle_scope.Close(
+      MakeDomainCallback(env, recv, callback, argc, argv));
+}
+
+
+enum encoding ParseEncoding(Isolate* isolate,
+                            Handle<Value> encoding_v,
+                            enum encoding _default) {
+  HandleScope scope(isolate);
 
   if (!encoding_v->IsString())
     return _default;
@@ -1078,15 +1247,21 @@ enum encoding ParseEncoding(Handle<Value> encoding_v, enum encoding _default) {
   }
 }
 
-Local<Value> Encode(const void *buf, size_t len, enum encoding encoding) {
-  return StringBytes::Encode(static_cast<const char*>(buf),
+Local<Value> Encode(Isolate* isolate,
+                    const void* buf,
+                    size_t len,
+                    enum encoding encoding) {
+  return StringBytes::Encode(isolate,
+                             static_cast<const char*>(buf),
                              len,
                              encoding);
 }
 
 // Returns -1 if the handle was not valid for decoding
-ssize_t DecodeBytes(v8::Handle<v8::Value> val, enum encoding encoding) {
-  HandleScope scope(node_isolate);
+ssize_t DecodeBytes(Isolate* isolate,
+                    Handle<Value> val,
+                    enum encoding encoding) {
+  HandleScope scope(isolate);
 
   if (val->IsArray()) {
     fprintf(stderr, "'raw' encoding (array of integers) has been removed. "
@@ -1095,7 +1270,7 @@ ssize_t DecodeBytes(v8::Handle<v8::Value> val, enum encoding encoding) {
     return -1;
   }
 
-  return StringBytes::Size(val, encoding);
+  return StringBytes::Size(isolate, val, encoding);
 }
 
 #ifndef MIN
@@ -1103,87 +1278,128 @@ ssize_t DecodeBytes(v8::Handle<v8::Value> val, enum encoding encoding) {
 #endif
 
 // Returns number of bytes written.
-ssize_t DecodeWrite(char *buf,
+ssize_t DecodeWrite(Isolate* isolate,
+                    char* buf,
                     size_t buflen,
-                    v8::Handle<v8::Value> val,
+                    Handle<Value> val,
                     enum encoding encoding) {
-  return StringBytes::Write(buf, buflen, val, encoding, NULL);
+  return StringBytes::Write(isolate, buf, buflen, val, encoding, NULL);
 }
 
-void DisplayExceptionLine(Handle<Message> message) {
-  // Prevent re-entry into this function.  For example, if there is
-  // a throw from a program in vm.runInThisContext(code, filename, true),
-  // then we want to show the original failure, not the secondary one.
-  static bool displayed_error = false;
-
-  if (displayed_error)
+void AppendExceptionLine(Environment* env,
+                         Handle<Value> er,
+                         Handle<Message> message) {
+  if (message.IsEmpty())
     return;
-  displayed_error = true;
 
-  uv_tty_reset_mode();
+  HandleScope scope(env->isolate());
+  Local<Object> err_obj;
+  if (!er.IsEmpty() && er->IsObject()) {
+    err_obj = er.As<Object>();
 
-  fprintf(stderr, "\n");
-
-  if (!message.IsEmpty()) {
-    // Print (filename):(line number): (message).
-    String::Utf8Value filename(message->GetScriptResourceName());
-    const char* filename_string = *filename;
-    int linenum = message->GetLineNumber();
-    fprintf(stderr, "%s:%i\n", filename_string, linenum);
-    // Print line of source code.
-    String::Utf8Value sourceline(message->GetSourceLine());
-    const char* sourceline_string = *sourceline;
-
-    // Because of how node modules work, all scripts are wrapped with a
-    // "function (module, exports, __filename, ...) {"
-    // to provide script local variables.
-    //
-    // When reporting errors on the first line of a script, this wrapper
-    // function is leaked to the user. There used to be a hack here to
-    // truncate off the first 62 characters, but it caused numerous other
-    // problems when vm.runIn*Context() methods were used for non-module
-    // code.
-    //
-    // If we ever decide to re-instate such a hack, the following steps
-    // must be taken:
-    //
-    // 1. Pass a flag around to say "this code was wrapped"
-    // 2. Update the stack frame output so that it is also correct.
-    //
-    // It would probably be simpler to add a line rather than add some
-    // number of characters to the first line, since V8 truncates the
-    // sourceline to 78 characters, and we end up not providing very much
-    // useful debugging info to the user if we remove 62 characters.
-
-    int start = message->GetStartColumn();
-    int end = message->GetEndColumn();
-
-    fprintf(stderr, "%s\n", sourceline_string);
-    // Print wavy underline (GetUnderline is deprecated).
-    for (int i = 0; i < start; i++) {
-      fputc((sourceline_string[i] == '\t') ? '\t' : ' ', stderr);
-    }
-    for (int i = start; i < end; i++) {
-      fputc('^', stderr);
-    }
-    fputc('\n', stderr);
+    // Do it only once per message
+    if (!err_obj->GetHiddenValue(env->processed_string()).IsEmpty())
+      return;
+    err_obj->SetHiddenValue(env->processed_string(), True(env->isolate()));
   }
+
+  static char arrow[1024];
+
+  // Print (filename):(line number): (message).
+  String::Utf8Value filename(message->GetScriptResourceName());
+  const char* filename_string = *filename;
+  int linenum = message->GetLineNumber();
+  // Print line of source code.
+  String::Utf8Value sourceline(message->GetSourceLine());
+  const char* sourceline_string = *sourceline;
+
+  // Because of how node modules work, all scripts are wrapped with a
+  // "function (module, exports, __filename, ...) {"
+  // to provide script local variables.
+  //
+  // When reporting errors on the first line of a script, this wrapper
+  // function is leaked to the user. There used to be a hack here to
+  // truncate off the first 62 characters, but it caused numerous other
+  // problems when vm.runIn*Context() methods were used for non-module
+  // code.
+  //
+  // If we ever decide to re-instate such a hack, the following steps
+  // must be taken:
+  //
+  // 1. Pass a flag around to say "this code was wrapped"
+  // 2. Update the stack frame output so that it is also correct.
+  //
+  // It would probably be simpler to add a line rather than add some
+  // number of characters to the first line, since V8 truncates the
+  // sourceline to 78 characters, and we end up not providing very much
+  // useful debugging info to the user if we remove 62 characters.
+
+  int start = message->GetStartColumn();
+  int end = message->GetEndColumn();
+
+  int off = snprintf(arrow,
+                     sizeof(arrow),
+                     "%s:%i\n%s\n",
+                     filename_string,
+                     linenum,
+                     sourceline_string);
+  assert(off >= 0);
+
+  // Print wavy underline (GetUnderline is deprecated).
+  for (int i = 0; i < start; i++) {
+    assert(static_cast<size_t>(off) < sizeof(arrow));
+    arrow[off++] = (sourceline_string[i] == '\t') ? '\t' : ' ';
+  }
+  for (int i = start; i < end; i++) {
+    assert(static_cast<size_t>(off) < sizeof(arrow));
+    arrow[off++] = '^';
+  }
+  assert(static_cast<size_t>(off) < sizeof(arrow) - 1);
+  arrow[off++] = '\n';
+  arrow[off] = '\0';
+
+  Local<String> arrow_str = String::NewFromUtf8(env->isolate(), arrow);
+  Local<Value> msg;
+  Local<Value> stack;
+
+  // Allocation failed, just print it out
+  if (arrow_str.IsEmpty() || err_obj.IsEmpty() || !err_obj->IsNativeError())
+    goto print;
+
+  msg = err_obj->Get(env->message_string());
+  stack = err_obj->Get(env->stack_string());
+
+  if (msg.IsEmpty() || stack.IsEmpty())
+    goto print;
+
+  err_obj->Set(env->message_string(),
+               String::Concat(arrow_str, msg->ToString()));
+  err_obj->Set(env->stack_string(),
+               String::Concat(arrow_str, stack->ToString()));
+  return;
+
+ print:
+  if (env->printed_error())
+    return;
+  env->set_printed_error(true);
+  uv_tty_reset_mode();
+  fprintf(stderr, "\n%s", arrow);
 }
 
 
-static void ReportException(Handle<Value> er, Handle<Message> message) {
-  HandleScope scope(node_isolate);
+static void ReportException(Environment* env,
+                            Handle<Value> er,
+                            Handle<Message> message) {
+  HandleScope scope(env->isolate());
 
-  DisplayExceptionLine(message);
+  AppendExceptionLine(env, er, message);
 
   Local<Value> trace_value;
 
-  if (er->IsUndefined() || er->IsNull()) {
-    trace_value = Undefined(node_isolate);
-  } else {
-    trace_value =
-        er->ToObject()->Get(FIXED_ONE_BYTE_STRING(node_isolate, "stack"));
-  }
+  if (er->IsUndefined() || er->IsNull())
+    trace_value = Undefined(env->isolate());
+  else
+    trace_value = er->ToObject()->Get(env->stack_string());
 
   String::Utf8Value trace(trace_value);
 
@@ -1199,8 +1415,8 @@ static void ReportException(Handle<Value> er, Handle<Message> message) {
 
     if (er->IsObject()) {
       Local<Object> err_obj = er.As<Object>();
-      message = err_obj->Get(FIXED_ONE_BYTE_STRING(node_isolate, "message"));
-      name = err_obj->Get(FIXED_ONE_BYTE_STRING(node_isolate, "name"));
+      message = err_obj->Get(env->message_string());
+      name = err_obj->Get(FIXED_ONE_BYTE_STRING(env->isolate(), "name"));
     }
 
     if (message.IsEmpty() ||
@@ -1221,14 +1437,16 @@ static void ReportException(Handle<Value> er, Handle<Message> message) {
 }
 
 
-static void ReportException(const TryCatch& try_catch) {
-  ReportException(try_catch.Exception(), try_catch.Message());
+static void ReportException(Environment* env, const TryCatch& try_catch) {
+  ReportException(env, try_catch.Exception(), try_catch.Message());
 }
 
 
 // Executes a str within the current v8 context.
-Local<Value> ExecuteString(Handle<String> source, Handle<Value> filename) {
-  HandleScope scope(node_isolate);
+static Local<Value> ExecuteString(Environment* env,
+                                  Handle<String> source,
+                                  Handle<Value> filename) {
+  HandleScope scope(env->isolate());
   TryCatch try_catch;
 
   // try_catch must be nonverbose to disable FatalException() handler,
@@ -1237,13 +1455,13 @@ Local<Value> ExecuteString(Handle<String> source, Handle<Value> filename) {
 
   Local<v8::Script> script = v8::Script::Compile(source, filename);
   if (script.IsEmpty()) {
-    ReportException(try_catch);
+    ReportException(env, try_catch);
     exit(3);
   }
 
   Local<Value> result = script->Run();
   if (result.IsEmpty()) {
-    ReportException(try_catch);
+    ReportException(env, try_catch);
     exit(4);
   }
 
@@ -1252,7 +1470,7 @@ Local<Value> ExecuteString(Handle<String> source, Handle<Value> filename) {
 
 
 static void GetActiveRequests(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  HandleScope scope(args.GetIsolate());
 
   Local<Array> ary = Array::New();
   QUEUE* q = NULL;
@@ -1272,13 +1490,14 @@ static void GetActiveRequests(const FunctionCallbackInfo<Value>& args) {
 // Non-static, friend of HandleWrap. Could have been a HandleWrap method but
 // implemented here for consistency with GetActiveRequests().
 void GetActiveHandles(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   Local<Array> ary = Array::New();
   QUEUE* q = NULL;
   int i = 0;
 
-  Local<String> owner_sym = FIXED_ONE_BYTE_STRING(node_isolate, "owner");
+  Local<String> owner_sym = env->owner_string();
 
   QUEUE_FOREACH(q, &handle_wrap_queue) {
     HandleWrap* w = CONTAINER_OF(q, HandleWrap, handle_wrap_queue_);
@@ -1301,22 +1520,25 @@ static void Abort(const FunctionCallbackInfo<Value>& args) {
 
 
 static void Chdir(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   if (args.Length() != 1 || !args[0]->IsString()) {
-    return ThrowError("Bad argument.");  // FIXME(bnoordhuis) ThrowTypeError?
+    // FIXME(bnoordhuis) ThrowTypeError?
+    return env->ThrowError("Bad argument.");
   }
 
   String::Utf8Value path(args[0]);
   int err = uv_chdir(*path);
   if (err) {
-    return ThrowUVException(err, "uv_chdir");
+    return env->ThrowUVException(err, "uv_chdir");
   }
 }
 
 
 static void Cwd(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 #ifdef _WIN32
   /* MAX_PATH is in characters, not bytes. Make sure we have enough headroom. */
   char buf[MAX_PATH * 4 + 1];
@@ -1326,25 +1548,26 @@ static void Cwd(const FunctionCallbackInfo<Value>& args) {
 
   int err = uv_cwd(buf, ARRAY_SIZE(buf) - 1);
   if (err) {
-    return ThrowUVException(err, "uv_cwd");
+    return env->ThrowUVException(err, "uv_cwd");
   }
 
   buf[ARRAY_SIZE(buf) - 1] = '\0';
-  Local<String> cwd = String::NewFromUtf8(node_isolate, buf);
+  Local<String> cwd = String::NewFromUtf8(env->isolate(), buf);
 
   args.GetReturnValue().Set(cwd);
 }
 
 
 static void Umask(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
   uint32_t old;
 
   if (args.Length() < 1 || args[0]->IsUndefined()) {
     old = umask(0);
     umask(static_cast<mode_t>(old));
   } else if (!args[0]->IsInt32() && !args[0]->IsString()) {
-    return ThrowTypeError("argument must be an integer or octal string.");
+    return env->ThrowTypeError("argument must be an integer or octal string.");
   } else {
     int oct;
     if (args[0]->IsInt32()) {
@@ -1357,7 +1580,7 @@ static void Umask(const FunctionCallbackInfo<Value>& args) {
       for (int i = 0; i < str.length(); i++) {
         char c = (*str)[i];
         if (c > '7' || c < '0') {
-          return ThrowTypeError("invalid octal string");
+          return env->ThrowTypeError("invalid octal string");
         }
         oct *= 8;
         oct += c - '0';
@@ -1485,50 +1708,53 @@ static void GetGid(const FunctionCallbackInfo<Value>& args) {
 
 
 static void SetGid(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   if (!args[0]->IsUint32() && !args[0]->IsString()) {
-    return ThrowTypeError("setgid argument must be a number or a string");
+    return env->ThrowTypeError("setgid argument must be a number or a string");
   }
 
   gid_t gid = gid_by_name(args[0]);
 
   if (gid == gid_not_found) {
-    return ThrowError("setgid group id does not exist");
+    return env->ThrowError("setgid group id does not exist");
   }
 
   if (setgid(gid)) {
-    return ThrowErrnoException(errno, "setgid");
+    return env->ThrowErrnoException(errno, "setgid");
   }
 }
 
 
 static void SetUid(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   if (!args[0]->IsUint32() && !args[0]->IsString()) {
-    return ThrowTypeError("setuid argument must be a number or a string");
+    return env->ThrowTypeError("setuid argument must be a number or a string");
   }
 
   uid_t uid = uid_by_name(args[0]);
 
   if (uid == uid_not_found) {
-    return ThrowError("setuid user id does not exist");
+    return env->ThrowError("setuid user id does not exist");
   }
 
   if (setuid(uid)) {
-    return ThrowErrnoException(errno, "setuid");
+    return env->ThrowErrnoException(errno, "setuid");
   }
 }
 
 
 static void GetGroups(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   int ngroups = getgroups(0, NULL);
 
   if (ngroups == -1) {
-    return ThrowErrnoException(errno, "getgroups");
+    return env->ThrowErrnoException(errno, "getgroups");
   }
 
   gid_t* groups = new gid_t[ngroups];
@@ -1537,7 +1763,7 @@ static void GetGroups(const FunctionCallbackInfo<Value>& args) {
 
   if (ngroups == -1) {
     delete[] groups;
-    return ThrowErrnoException(errno, "getgroups");
+    return env->ThrowErrnoException(errno, "getgroups");
   }
 
   Local<Array> groups_list = Array::New(ngroups);
@@ -1545,7 +1771,7 @@ static void GetGroups(const FunctionCallbackInfo<Value>& args) {
   gid_t egid = getegid();
 
   for (int i = 0; i < ngroups; i++) {
-    groups_list->Set(i, Integer::New(groups[i], node_isolate));
+    groups_list->Set(i, Integer::New(groups[i], env->isolate()));
     if (groups[i] == egid)
       seen_egid = true;
   }
@@ -1553,7 +1779,7 @@ static void GetGroups(const FunctionCallbackInfo<Value>& args) {
   delete[] groups;
 
   if (seen_egid == false) {
-    groups_list->Set(ngroups, Integer::New(egid, node_isolate));
+    groups_list->Set(ngroups, Integer::New(egid, env->isolate()));
   }
 
   args.GetReturnValue().Set(groups_list);
@@ -1561,10 +1787,11 @@ static void GetGroups(const FunctionCallbackInfo<Value>& args) {
 
 
 static void SetGroups(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   if (!args[0]->IsArray()) {
-    return ThrowTypeError("argument 1 must be an array");
+    return env->ThrowTypeError("argument 1 must be an array");
   }
 
   Local<Array> groups_list = args[0].As<Array>();
@@ -1576,7 +1803,7 @@ static void SetGroups(const FunctionCallbackInfo<Value>& args) {
 
     if (gid == gid_not_found) {
       delete[] groups;
-      return ThrowError("group name not found");
+      return env->ThrowError("group name not found");
     }
 
     groups[i] = gid;
@@ -1586,20 +1813,21 @@ static void SetGroups(const FunctionCallbackInfo<Value>& args) {
   delete[] groups;
 
   if (rc == -1) {
-    return ThrowErrnoException(errno, "setgroups");
+    return env->ThrowErrnoException(errno, "setgroups");
   }
 }
 
 
 static void InitGroups(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   if (!args[0]->IsUint32() && !args[0]->IsString()) {
-    return ThrowTypeError("argument 1 must be a number or a string");
+    return env->ThrowTypeError("argument 1 must be a number or a string");
   }
 
   if (!args[1]->IsUint32() && !args[1]->IsString()) {
-    return ThrowTypeError("argument 2 must be a number or a string");
+    return env->ThrowTypeError("argument 2 must be a number or a string");
   }
 
   String::Utf8Value arg0(args[0]);
@@ -1616,7 +1844,7 @@ static void InitGroups(const FunctionCallbackInfo<Value>& args) {
   }
 
   if (user == NULL) {
-    return ThrowError("initgroups user not found");
+    return env->ThrowError("initgroups user not found");
   }
 
   extra_group = gid_by_name(args[1]);
@@ -1624,7 +1852,7 @@ static void InitGroups(const FunctionCallbackInfo<Value>& args) {
   if (extra_group == gid_not_found) {
     if (must_free)
       free(user);
-    return ThrowError("initgroups extra group not found");
+    return env->ThrowError("initgroups extra group not found");
   }
 
   int rc = initgroups(user, extra_group);
@@ -1634,7 +1862,7 @@ static void InitGroups(const FunctionCallbackInfo<Value>& args) {
   }
 
   if (rc) {
-    return ThrowErrnoException(errno, "initgroups");
+    return env->ThrowErrnoException(errno, "initgroups");
   }
 }
 
@@ -1642,13 +1870,15 @@ static void InitGroups(const FunctionCallbackInfo<Value>& args) {
 
 
 void Exit(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
   exit(args[0]->IntegerValue());
 }
 
 
 static void Uptime(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
   double uptime;
   if (uv_uptime(&uptime))
     return;
@@ -1657,26 +1887,26 @@ static void Uptime(const FunctionCallbackInfo<Value>& args) {
 
 
 void MemoryUsage(const FunctionCallbackInfo<Value>& args) {
-  HandleScope handle_scope(args.GetIsolate());
   Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   size_t rss;
   int err = uv_resident_set_memory(&rss);
   if (err) {
-    return ThrowUVException(err, "uv_resident_set_memory");
+    return env->ThrowUVException(err, "uv_resident_set_memory");
   }
 
   // V8 memory usage
   HeapStatistics v8_heap_stats;
-  node_isolate->GetHeapStatistics(&v8_heap_stats);
+  env->isolate()->GetHeapStatistics(&v8_heap_stats);
 
   Local<Integer> heap_total =
-      Integer::NewFromUnsigned(v8_heap_stats.total_heap_size(), node_isolate);
+      Integer::NewFromUnsigned(v8_heap_stats.total_heap_size(), env->isolate());
   Local<Integer> heap_used =
-      Integer::NewFromUnsigned(v8_heap_stats.used_heap_size(), node_isolate);
+      Integer::NewFromUnsigned(v8_heap_stats.used_heap_size(), env->isolate());
 
   Local<Object> info = Object::New();
-  info->Set(env->rss_string(), Number::New(node_isolate, rss));
+  info->Set(env->rss_string(), Number::New(env->isolate(), rss));
   info->Set(env->heap_total_string(), heap_total);
   info->Set(env->heap_used_string(), heap_used);
 
@@ -1685,10 +1915,11 @@ void MemoryUsage(const FunctionCallbackInfo<Value>& args) {
 
 
 void Kill(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   if (args.Length() != 2) {
-    return ThrowError("Bad argument.");
+    return env->ThrowError("Bad argument.");
   }
 
   int pid = args[0]->IntegerValue();
@@ -1706,14 +1937,16 @@ void Kill(const FunctionCallbackInfo<Value>& args) {
 // and nanoseconds, to avoid any integer overflow possibility.
 // Pass in an Array from a previous hrtime() call to instead get a time diff.
 void Hrtime(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   uint64_t t = uv_hrtime();
 
   if (args.Length() > 0) {
     // return a time diff tuple
     if (!args[0]->IsArray()) {
-      return ThrowTypeError("process.hrtime() only accepts an Array tuple.");
+      return env->ThrowTypeError(
+          "process.hrtime() only accepts an Array tuple.");
     }
     Local<Array> inArray = Local<Array>::Cast(args[0]);
     uint64_t seconds = inArray->Get(0)->Uint32Value();
@@ -1722,11 +1955,34 @@ void Hrtime(const FunctionCallbackInfo<Value>& args) {
   }
 
   Local<Array> tuple = Array::New(2);
-  tuple->Set(0, Integer::NewFromUnsigned(t / NANOS_PER_SEC, node_isolate));
-  tuple->Set(1, Integer::NewFromUnsigned(t % NANOS_PER_SEC, node_isolate));
+  tuple->Set(0, Integer::NewFromUnsigned(t / NANOS_PER_SEC, env->isolate()));
+  tuple->Set(1, Integer::NewFromUnsigned(t % NANOS_PER_SEC, env->isolate()));
   args.GetReturnValue().Set(tuple);
 }
 
+extern "C" void node_module_register(void* m) {
+  struct node_module* mp = reinterpret_cast<struct node_module*>(m);
+
+  if (mp->nm_flags & NM_F_BUILTIN) {
+    mp->nm_link = modlist_builtin;
+    modlist_builtin = mp;
+  } else {
+    assert(modpending == NULL);
+    modpending = mp;
+  }
+}
+
+struct node_module* get_builtin_module(const char* name) {
+  struct node_module* mp;
+
+  for (mp = modlist_builtin; mp != NULL; mp = mp->nm_link) {
+    if (strcmp(mp->nm_modname, name) == 0)
+      break;
+  }
+
+  assert(mp == NULL || (mp->nm_flags & NM_F_BUILTIN) != 0);
+  return (mp);
+}
 
 typedef void (UV_DYNAMIC* extInit)(Handle<Object> exports);
 
@@ -1739,12 +1995,12 @@ typedef void (UV_DYNAMIC* extInit)(Handle<Object> exports);
 void DLOpen(const FunctionCallbackInfo<Value>& args) {
   HandleScope handle_scope(args.GetIsolate());
   Environment* env = Environment::GetCurrent(args.GetIsolate());
-  char symbol[1024], *base, *pos;
+  struct node_module* mp;
   uv_lib_t lib;
-  int r;
 
   if (args.Length() < 2) {
-    return ThrowError("process.dlopen takes exactly 2 arguments.");
+    env->ThrowError("process.dlopen takes exactly 2 arguments.");
+    return;
   }
 
   Local<Object> module = args[0]->ToObject();  // Cast
@@ -1759,72 +2015,47 @@ void DLOpen(const FunctionCallbackInfo<Value>& args) {
     // Windows needs to add the filename into the error message
     errmsg = String::Concat(errmsg, args[1]->ToString());
 #endif  // _WIN32
-    ThrowException(Exception::Error(errmsg));
+    env->isolate()->ThrowException(Exception::Error(errmsg));
     return;
   }
 
-  String::Utf8Value path(args[1]);
-  base = *path;
-
-  /* Find the shared library filename within the full path. */
-#ifdef __POSIX__
-  pos = strrchr(base, '/');
-  if (pos != NULL) {
-    base = pos + 1;
-  }
-#else  // Windows
-  for (;;) {
-    pos = strpbrk(base, "\\/:");
-    if (pos == NULL) {
-      break;
-    }
-    base = pos + 1;
-  }
-#endif  // __POSIX__
-
-  /* Strip the .node extension. */
-  pos = strrchr(base, '.');
-  if (pos != NULL) {
-    *pos = '\0';
-  }
-
-  /* Add the `_module` suffix to the extension name. */
-  r = snprintf(symbol, sizeof symbol, "%s_module", base);
-  if (r <= 0 || static_cast<size_t>(r) >= sizeof symbol) {
-    return ThrowError("Out of memory.");
-  }
-
-  /* Replace dashes with underscores. When loading foo-bar.node,
-   * look for foo_bar_module, not foo-bar_module.
+  /*
+   * Objects containing v14 or later modules will have registered themselves
+   * on the pending list.  Activate all of them now.  At present, only one
+   * module per object is supported.
    */
-  for (pos = symbol; *pos != '\0'; ++pos) {
-    if (*pos == '-')
-      *pos = '_';
-  }
+  mp = modpending;
+  modpending = NULL;
 
-  node_module_struct *mod;
-  if (uv_dlsym(&lib, symbol, reinterpret_cast<void**>(&mod))) {
-    char errmsg[1024];
-    snprintf(errmsg, sizeof(errmsg), "Symbol %s not found.", symbol);
-    return ThrowError(errmsg);
+  if (mp == NULL) {
+    env->ThrowError("Module did not self-register.");
+    return;
   }
-
-  if (mod->version != NODE_MODULE_VERSION) {
+  if (mp->nm_version != NODE_MODULE_VERSION) {
     char errmsg[1024];
     snprintf(errmsg,
              sizeof(errmsg),
              "Module version mismatch. Expected %d, got %d.",
-             NODE_MODULE_VERSION, mod->version);
-    return ThrowError(errmsg);
+             NODE_MODULE_VERSION, mp->nm_version);
+    env->ThrowError(errmsg);
+    return;
+  }
+  if (mp->nm_flags & NM_F_BUILTIN) {
+    env->ThrowError("Built-in module self-registered.");
+    return;
   }
 
-  // Execute the C++ module
-  if (mod->register_context_func != NULL) {
-    mod->register_context_func(exports, module, env->context());
-  } else if (mod->register_func != NULL) {
-    mod->register_func(exports, module);
+  mp->nm_dso_handle = lib.handle;
+  mp->nm_link = modlist_addon;
+  modlist_addon = mp;
+
+  if (mp->nm_context_register_func != NULL) {
+    mp->nm_context_register_func(exports, module, env->context(), mp->nm_priv);
+  } else if (mp->nm_register_func != NULL) {
+    mp->nm_register_func(exports, module, mp->nm_priv);
   } else {
-    return ThrowError("Module has no declared entry point.");
+    env->ThrowError("Module has no declared entry point.");
+    return;
   }
 
   // Tell coverity that 'handle' should not be freed when we return.
@@ -1839,10 +2070,7 @@ static void OnFatalError(const char* location, const char* message) {
     fprintf(stderr, "FATAL ERROR: %s\n", message);
   }
   fflush(stderr);
-#if defined(DEBUG)
   abort();
-#endif
-  exit(5);
 }
 
 
@@ -1853,10 +2081,12 @@ NO_RETURN void FatalError(const char* location, const char* message) {
 }
 
 
-void FatalException(Handle<Value> error, Handle<Message> message) {
-  HandleScope scope(node_isolate);
+void FatalException(Isolate* isolate,
+                    Handle<Value> error,
+                    Handle<Message> message) {
+  HandleScope scope(isolate);
 
-  Environment* env = Environment::GetCurrent(node_isolate);
+  Environment* env = Environment::GetCurrent(isolate);
   Local<Object> process_object = env->process_object();
   Local<String> fatal_exception_string = env->fatal_exception_string();
   Local<Function> fatal_exception_function =
@@ -1865,7 +2095,7 @@ void FatalException(Handle<Value> error, Handle<Message> message) {
   if (!fatal_exception_function->IsFunction()) {
     // failed before the process._fatalException function was added!
     // this is probably pretty bad.  Nothing to do but report and exit.
-    ReportException(error, message);
+    ReportException(env, error, message);
     exit(6);
   }
 
@@ -1880,29 +2110,29 @@ void FatalException(Handle<Value> error, Handle<Message> message) {
 
   if (fatal_try_catch.HasCaught()) {
     // the fatal exception function threw, so we must exit
-    ReportException(fatal_try_catch);
+    ReportException(env, fatal_try_catch);
     exit(7);
   }
 
   if (false == caught->BooleanValue()) {
-    ReportException(error, message);
+    ReportException(env, error, message);
     exit(1);
   }
 }
 
 
-void FatalException(const TryCatch& try_catch) {
-  HandleScope scope(node_isolate);
+void FatalException(Isolate* isolate, const TryCatch& try_catch) {
+  HandleScope scope(isolate);
   // TODO(bajtos) do not call FatalException if try_catch is verbose
   // (requires V8 API to expose getter for try_catch.is_verbose_)
-  FatalException(try_catch.Exception(), try_catch.Message());
+  FatalException(isolate, try_catch.Exception(), try_catch.Message());
 }
 
 
 void OnMessage(Handle<Message> message, Handle<Value> error) {
   // The current version of V8 sends messages for errors only
   // (thus `error` is always set).
-  FatalException(error, message);
+  FatalException(Isolate::GetCurrent(), error, message);
 }
 
 
@@ -1928,16 +2158,17 @@ static void Binding(const FunctionCallbackInfo<Value>& args) {
 
   Local<Array> modules = env->module_load_list_array();
   uint32_t l = modules->Length();
-  modules->Set(l, OneByteString(node_isolate, buf));
+  modules->Set(l, OneByteString(env->isolate(), buf));
 
-  node_module_struct* mod = get_builtin_module(*module_v);
+  node_module* mod = get_builtin_module(*module_v);
   if (mod != NULL) {
     exports = Object::New();
     // Internal bindings don't have a "module" object, only exports.
-    assert(mod->register_func == NULL);
-    assert(mod->register_context_func != NULL);
+    assert(mod->nm_register_func == NULL);
+    assert(mod->nm_context_register_func != NULL);
     Local<Value> unused = Undefined(env->isolate());
-    mod->register_context_func(exports, unused, env->context());
+    mod->nm_context_register_func(exports, unused,
+      env->context(), mod->nm_priv);
     cache->Set(module, exports);
   } else if (!strcmp(*module_v, "constants")) {
     exports = Object::New();
@@ -1945,10 +2176,10 @@ static void Binding(const FunctionCallbackInfo<Value>& args) {
     cache->Set(module, exports);
   } else if (!strcmp(*module_v, "natives")) {
     exports = Object::New();
-    DefineJavaScript(exports);
+    DefineJavaScript(env, exports);
     cache->Set(module, exports);
   } else {
-    return ThrowError("No such module");
+    return env->ThrowError("No such module");
   }
 
   args.GetReturnValue().Set(exports);
@@ -1957,17 +2188,19 @@ static void Binding(const FunctionCallbackInfo<Value>& args) {
 
 static void ProcessTitleGetter(Local<String> property,
                                const PropertyCallbackInfo<Value>& info) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(info.GetIsolate());
+  HandleScope scope(env->isolate());
   char buffer[512];
   uv_get_process_title(buffer, sizeof(buffer));
-  info.GetReturnValue().Set(String::NewFromUtf8(node_isolate, buffer));
+  info.GetReturnValue().Set(String::NewFromUtf8(env->isolate(), buffer));
 }
 
 
 static void ProcessTitleSetter(Local<String> property,
                                Local<Value> value,
                                const PropertyCallbackInfo<void>& info) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(info.GetIsolate());
+  HandleScope scope(env->isolate());
   String::Utf8Value title(value);
   // TODO(piscisaureus): protect with a lock
   uv_set_process_title(*title);
@@ -1976,12 +2209,13 @@ static void ProcessTitleSetter(Local<String> property,
 
 static void EnvGetter(Local<String> property,
                       const PropertyCallbackInfo<Value>& info) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(info.GetIsolate());
+  HandleScope scope(env->isolate());
 #ifdef __POSIX__
   String::Utf8Value key(property);
   const char* val = getenv(*key);
   if (val) {
-    return info.GetReturnValue().Set(String::NewFromUtf8(node_isolate, val));
+    return info.GetReturnValue().Set(String::NewFromUtf8(env->isolate(), val));
   }
 #else  // _WIN32
   String::Value key(property);
@@ -1995,7 +2229,7 @@ static void EnvGetter(Local<String> property,
   if ((result > 0 || GetLastError() == ERROR_SUCCESS) &&
       result < ARRAY_SIZE(buffer)) {
     const uint16_t* two_byte_buffer = reinterpret_cast<const uint16_t*>(buffer);
-    Local<String> rc = String::NewFromTwoByte(node_isolate, two_byte_buffer);
+    Local<String> rc = String::NewFromTwoByte(env->isolate(), two_byte_buffer);
     return info.GetReturnValue().Set(rc);
   }
 #endif
@@ -2008,7 +2242,8 @@ static void EnvGetter(Local<String> property,
 static void EnvSetter(Local<String> property,
                       Local<Value> value,
                       const PropertyCallbackInfo<Value>& info) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(info.GetIsolate());
+  HandleScope scope(env->isolate());
 #ifdef __POSIX__
   String::Utf8Value key(property);
   String::Utf8Value val(value);
@@ -2029,7 +2264,8 @@ static void EnvSetter(Local<String> property,
 
 static void EnvQuery(Local<String> property,
                      const PropertyCallbackInfo<Integer>& info) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(info.GetIsolate());
+  HandleScope scope(env->isolate());
   int32_t rc = -1;  // Not found unless proven otherwise.
 #ifdef __POSIX__
   String::Utf8Value key(property);
@@ -2056,7 +2292,8 @@ static void EnvQuery(Local<String> property,
 
 static void EnvDeleter(Local<String> property,
                        const PropertyCallbackInfo<Boolean>& info) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(info.GetIsolate());
+  HandleScope scope(env->isolate());
   bool rc = true;
 #ifdef __POSIX__
   String::Utf8Value key(property);
@@ -2078,29 +2315,30 @@ static void EnvDeleter(Local<String> property,
 
 
 static void EnvEnumerator(const PropertyCallbackInfo<Array>& info) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(info.GetIsolate());
+  HandleScope scope(env->isolate());
 #ifdef __POSIX__
   int size = 0;
   while (environ[size])
     size++;
 
-  Local<Array> env = Array::New(size);
+  Local<Array> envarr = Array::New(size);
 
   for (int i = 0; i < size; ++i) {
     const char* var = environ[i];
     const char* s = strchr(var, '=');
     const int length = s ? s - var : strlen(var);
-    Local<String> name = String::NewFromUtf8(node_isolate,
+    Local<String> name = String::NewFromUtf8(env->isolate(),
                                              var,
                                              String::kNormalString,
                                              length);
-    env->Set(i, name);
+    envarr->Set(i, name);
   }
 #else  // _WIN32
   WCHAR* environment = GetEnvironmentStringsW();
   if (environment == NULL)
     return;  // This should not happen.
-  Local<Array> env = Array::New();
+  Local<Array> envarr = Array::New();
   WCHAR* p = environment;
   int i = 0;
   while (*p != NULL) {
@@ -2117,42 +2355,42 @@ static void EnvEnumerator(const PropertyCallbackInfo<Array>& info) {
     }
     const uint16_t* two_byte_buffer = reinterpret_cast<const uint16_t*>(p);
     const size_t two_byte_buffer_len = s - p;
-    Local<String> value = String::NewFromTwoByte(node_isolate,
+    Local<String> value = String::NewFromTwoByte(env->isolate(),
                                                  two_byte_buffer,
                                                  String::kNormalString,
                                                  two_byte_buffer_len);
-    env->Set(i++, value);
+    envarr->Set(i++, value);
     p = s + wcslen(s) + 1;
   }
   FreeEnvironmentStringsW(environment);
 #endif
 
-  info.GetReturnValue().Set(env);
+  info.GetReturnValue().Set(envarr);
 }
 
 
-static Handle<Object> GetFeatures() {
-  HandleScope scope(node_isolate);
+static Handle<Object> GetFeatures(Environment* env) {
+  HandleScope scope(env->isolate());
 
   Local<Object> obj = Object::New();
 #if defined(DEBUG) && DEBUG
-  Local<Value> debug = True(node_isolate);
+  Local<Value> debug = True(env->isolate());
 #else
-  Local<Value> debug = False(node_isolate);
+  Local<Value> debug = False(env->isolate());
 #endif  // defined(DEBUG) && DEBUG
 
-  obj->Set(FIXED_ONE_BYTE_STRING(node_isolate, "debug"), debug);
+  obj->Set(env->debug_string(), debug);
 
-  obj->Set(FIXED_ONE_BYTE_STRING(node_isolate, "uv"), True(node_isolate));
+  obj->Set(env->uv_string(), True(env->isolate()));
   // TODO(bnoordhuis) ping libuv
-  obj->Set(FIXED_ONE_BYTE_STRING(node_isolate, "ipv6"), True(node_isolate));
+  obj->Set(env->ipv6_lc_string(), True(env->isolate()));
 
 #ifdef OPENSSL_NPN_NEGOTIATED
-  Local<Boolean> tls_npn = True(node_isolate);
+  Local<Boolean> tls_npn = True(env->isolate());
 #else
-  Local<Boolean> tls_npn = False(node_isolate);
+  Local<Boolean> tls_npn = False(env->isolate());
 #endif
-  obj->Set(FIXED_ONE_BYTE_STRING(node_isolate, "tls_npn"), tls_npn);
+  obj->Set(env->tls_npn_string(), tls_npn);
 
 #ifndef OPENSSL_NO_NEXTPROTONEG
   Local<Boolean> tls_alpn = True(node_isolate);
@@ -2162,13 +2400,13 @@ static Handle<Object> GetFeatures() {
   obj->Set(FIXED_ONE_BYTE_STRING(node_isolate, "tls_alpn"), tls_alpn);
 
 #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
-  Local<Boolean> tls_sni = True(node_isolate);
+  Local<Boolean> tls_sni = True(env->isolate());
 #else
-  Local<Boolean> tls_sni = False(node_isolate);
+  Local<Boolean> tls_sni = False(env->isolate());
 #endif
-  obj->Set(FIXED_ONE_BYTE_STRING(node_isolate, "tls_sni"), tls_sni);
+  obj->Set(env->tls_sni_string(), tls_sni);
 
-  obj->Set(FIXED_ONE_BYTE_STRING(node_isolate, "tls"),
+  obj->Set(env->tls_string(),
            Boolean::New(get_builtin_module("crypto") != NULL));
 
   return scope.Close(obj);
@@ -2177,7 +2415,8 @@ static Handle<Object> GetFeatures() {
 
 static void DebugPortGetter(Local<String> property,
                             const PropertyCallbackInfo<Value>& info) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(info.GetIsolate());
+  HandleScope scope(env->isolate());
   info.GetReturnValue().Set(debug_port);
 }
 
@@ -2185,7 +2424,8 @@ static void DebugPortGetter(Local<String> property,
 static void DebugPortSetter(Local<String> property,
                             Local<Value> value,
                             const PropertyCallbackInfo<void>& info) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(info.GetIsolate());
+  HandleScope scope(env->isolate());
   debug_port = value->NumberValue();
 }
 
@@ -2273,7 +2513,7 @@ void StopProfilerIdleNotifier(const FunctionCallbackInfo<Value>& args) {
 
 #define READONLY_PROPERTY(obj, str, var)                                      \
   do {                                                                        \
-    obj->Set(OneByteString(node_isolate, str), var, v8::ReadOnly);            \
+    obj->Set(OneByteString(env->isolate(), str), var, v8::ReadOnly);          \
   } while (0)
 
 
@@ -2282,18 +2522,18 @@ void SetupProcessObject(Environment* env,
                         const char* const* argv,
                         int exec_argc,
                         const char* const* exec_argv) {
-  HandleScope scope(node_isolate);
+  HandleScope scope(env->isolate());
 
   Local<Object> process = env->process_object();
 
-  process->SetAccessor(FIXED_ONE_BYTE_STRING(node_isolate, "title"),
+  process->SetAccessor(env->title_string(),
                        ProcessTitleGetter,
                        ProcessTitleSetter);
 
   // process.version
   READONLY_PROPERTY(process,
                     "version",
-                    FIXED_ONE_BYTE_STRING(node_isolate, NODE_VERSION));
+                    FIXED_ONE_BYTE_STRING(env->isolate(), NODE_VERSION));
 
   // process.moduleLoadList
   READONLY_PROPERTY(process,
@@ -2309,26 +2549,27 @@ void SetupProcessObject(Environment* env,
                                      NODE_STRINGIFY(HTTP_PARSER_VERSION_MINOR);
   READONLY_PROPERTY(versions,
                     "http_parser",
-                    FIXED_ONE_BYTE_STRING(node_isolate, http_parser_version));
+                    FIXED_ONE_BYTE_STRING(env->isolate(), http_parser_version));
 
   // +1 to get rid of the leading 'v'
   READONLY_PROPERTY(versions,
                     "node",
-                    OneByteString(node_isolate, NODE_VERSION + 1));
+                    OneByteString(env->isolate(), NODE_VERSION + 1));
   READONLY_PROPERTY(versions,
                     "v8",
-                    OneByteString(node_isolate, V8::GetVersion()));
+                    OneByteString(env->isolate(), V8::GetVersion()));
   READONLY_PROPERTY(versions,
                     "uv",
-                    OneByteString(node_isolate, uv_version_string()));
+                    OneByteString(env->isolate(), uv_version_string()));
   READONLY_PROPERTY(versions,
                     "zlib",
-                    FIXED_ONE_BYTE_STRING(node_isolate, ZLIB_VERSION));
+                    FIXED_ONE_BYTE_STRING(env->isolate(), ZLIB_VERSION));
 
   const char node_modules_version[] = NODE_STRINGIFY(NODE_MODULE_VERSION);
-  READONLY_PROPERTY(versions,
-                    "modules",
-                    FIXED_ONE_BYTE_STRING(node_isolate, node_modules_version));
+  READONLY_PROPERTY(
+      versions,
+      "modules",
+      FIXED_ONE_BYTE_STRING(env->isolate(), node_modules_version));
 
 #if HAVE_OPENSSL
   // Stupid code to slice out the version string.
@@ -2349,31 +2590,31 @@ void SetupProcessObject(Environment* env,
     READONLY_PROPERTY(
         versions,
         "openssl",
-        OneByteString(node_isolate, &OPENSSL_VERSION_TEXT[i], j - i));
+        OneByteString(env->isolate(), &OPENSSL_VERSION_TEXT[i], j - i));
   }
 #endif
 
   // process.arch
-  READONLY_PROPERTY(process, "arch", OneByteString(node_isolate, ARCH));
+  READONLY_PROPERTY(process, "arch", OneByteString(env->isolate(), ARCH));
 
   // process.platform
   READONLY_PROPERTY(process,
                     "platform",
-                    OneByteString(node_isolate, PLATFORM));
+                    OneByteString(env->isolate(), PLATFORM));
 
   // process.argv
   Local<Array> arguments = Array::New(argc);
   for (int i = 0; i < argc; ++i) {
-    arguments->Set(i, String::NewFromUtf8(node_isolate, argv[i]));
+    arguments->Set(i, String::NewFromUtf8(env->isolate(), argv[i]));
   }
-  process->Set(FIXED_ONE_BYTE_STRING(node_isolate, "argv"), arguments);
+  process->Set(env->argv_string(), arguments);
 
   // process.execArgv
   Local<Array> exec_arguments = Array::New(exec_argc);
   for (int i = 0; i < exec_argc; ++i) {
-    exec_arguments->Set(i, String::NewFromUtf8(node_isolate, exec_argv[i]));
+    exec_arguments->Set(i, String::NewFromUtf8(env->isolate(), exec_argv[i]));
   }
-  process->Set(FIXED_ONE_BYTE_STRING(node_isolate, "execArgv"), exec_arguments);
+  process->Set(env->exec_argv_string(), exec_arguments);
 
   // create process.env
   Local<ObjectTemplate> process_env_template = ObjectTemplate::New();
@@ -2384,12 +2625,11 @@ void SetupProcessObject(Environment* env,
                                                 EnvEnumerator,
                                                 Object::New());
   Local<Object> process_env = process_env_template->NewInstance();
-  process->Set(FIXED_ONE_BYTE_STRING(node_isolate, "env"), process_env);
+  process->Set(env->env_string(), process_env);
 
-  READONLY_PROPERTY(process, "pid", Integer::New(getpid(), node_isolate));
-  READONLY_PROPERTY(process, "features", GetFeatures());
-  process->SetAccessor(
-      FIXED_ONE_BYTE_STRING(node_isolate, "_needImmediateCallback"),
+  READONLY_PROPERTY(process, "pid", Integer::New(getpid(), env->isolate()));
+  READONLY_PROPERTY(process, "features", GetFeatures(env));
+  process->SetAccessor(env->need_imm_cb_string(),
       NeedImmediateCallbackGetter,
       NeedImmediateCallbackSetter);
 
@@ -2397,50 +2637,49 @@ void SetupProcessObject(Environment* env,
   if (eval_string) {
     READONLY_PROPERTY(process,
                       "_eval",
-                      String::NewFromUtf8(node_isolate, eval_string));
+                      String::NewFromUtf8(env->isolate(), eval_string));
   }
 
   // -p, --print
   if (print_eval) {
-    READONLY_PROPERTY(process, "_print_eval", True(node_isolate));
+    READONLY_PROPERTY(process, "_print_eval", True(env->isolate()));
   }
 
   // -i, --interactive
   if (force_repl) {
-    READONLY_PROPERTY(process, "_forceRepl", True(node_isolate));
+    READONLY_PROPERTY(process, "_forceRepl", True(env->isolate()));
   }
 
   // --no-deprecation
   if (no_deprecation) {
-    READONLY_PROPERTY(process, "noDeprecation", True(node_isolate));
+    READONLY_PROPERTY(process, "noDeprecation", True(env->isolate()));
   }
 
   // --throw-deprecation
   if (throw_deprecation) {
-    READONLY_PROPERTY(process, "throwDeprecation", True(node_isolate));
+    READONLY_PROPERTY(process, "throwDeprecation", True(env->isolate()));
   }
 
   // --trace-deprecation
   if (trace_deprecation) {
-    READONLY_PROPERTY(process, "traceDeprecation", True(node_isolate));
+    READONLY_PROPERTY(process, "traceDeprecation", True(env->isolate()));
   }
 
   size_t exec_path_len = 2 * PATH_MAX;
   char* exec_path = new char[exec_path_len];
   Local<String> exec_path_value;
   if (uv_exepath(exec_path, &exec_path_len) == 0) {
-    exec_path_value = String::NewFromUtf8(node_isolate,
+    exec_path_value = String::NewFromUtf8(env->isolate(),
                                           exec_path,
                                           String::kNormalString,
                                           exec_path_len);
   } else {
-    exec_path_value = String::NewFromUtf8(node_isolate, argv[0]);
+    exec_path_value = String::NewFromUtf8(env->isolate(), argv[0]);
   }
-  process->Set(FIXED_ONE_BYTE_STRING(node_isolate, "execPath"),
-               exec_path_value);
+  process->Set(env->exec_path_string(), exec_path_value);
   delete[] exec_path;
 
-  process->SetAccessor(FIXED_ONE_BYTE_STRING(node_isolate, "debugPort"),
+  process->SetAccessor(env->debug_port_string(),
                        DebugPortGetter,
                        DebugPortSetter);
 
@@ -2489,6 +2728,7 @@ void SetupProcessObject(Environment* env,
 
   NODE_SET_METHOD(process, "_setupAsyncListener", SetupAsyncListener);
   NODE_SET_METHOD(process, "_setupNextTick", SetupNextTick);
+  NODE_SET_METHOD(process, "_setupDomainUse", SetupDomainUse);
 
   // values use to cross communicate with processNextTick
   Local<Object> tick_info_obj = Object::New();
@@ -2496,10 +2736,10 @@ void SetupProcessObject(Environment* env,
       env->tick_info()->fields(),
       kExternalUnsignedIntArray,
       env->tick_info()->fields_count());
-  process->Set(FIXED_ONE_BYTE_STRING(node_isolate, "_tickInfo"), tick_info_obj);
+  process->Set(env->tick_info_string(), tick_info_obj);
 
   // pre-set _events object for faster emit checks
-  process->Set(FIXED_ONE_BYTE_STRING(node_isolate, "_events"), Object::New());
+  process->Set(env->events_string(), Object::New());
 }
 
 
@@ -2522,7 +2762,8 @@ static void SignalExit(int signal) {
 // when debugging the stream.Writable class or the process.nextTick
 // function, it is useful to bypass JavaScript entirely.
 static void RawDebug(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   assert(args.Length() == 1 && args[0]->IsString() &&
          "must be called with a single string");
@@ -2534,7 +2775,7 @@ static void RawDebug(const FunctionCallbackInfo<Value>& args) {
 
 
 void Load(Environment* env) {
-  HandleScope handle_scope(node_isolate);
+  HandleScope handle_scope(env->isolate());
 
   // Compile, execute the src/node.js file. (Which was included as static C
   // string in node_natives.h. 'natve_node' is the string containing that
@@ -2550,10 +2791,10 @@ void Load(Environment* env) {
   // are not safe to ignore.
   try_catch.SetVerbose(false);
 
-  Local<String> script_name = FIXED_ONE_BYTE_STRING(node_isolate, "node.js");
-  Local<Value> f_value = ExecuteString(MainSource(), script_name);
+  Local<String> script_name = FIXED_ONE_BYTE_STRING(env->isolate(), "node.js");
+  Local<Value> f_value = ExecuteString(env, MainSource(env), script_name);
   if (try_catch.HasCaught())  {
-    ReportException(try_catch);
+    ReportException(env, try_catch);
     exit(10);
   }
   assert(f_value->IsFunction());
@@ -2571,11 +2812,11 @@ void Load(Environment* env) {
   Local<Object> global = env->context()->Global();
 
 #if defined HAVE_DTRACE || defined HAVE_ETW
-  InitDTrace(global);
+  InitDTrace(env, global);
 #endif
 
 #if defined HAVE_PERFCTR
-  InitPerfCounters(global);
+  InitPerfCounters(env, global);
 #endif
 
   // Enable handling of uncaught exceptions
@@ -2721,7 +2962,9 @@ static void ParseArgs(int* argc,
           fprintf(stderr, "%s: %s requires an argument\n", argv[0], arg);
           exit(9);
         }
-      } else if (argv[index + 1] != NULL && argv[index + 1][0] != '-') {
+      } else if ((index + 1 < nargs) &&
+                 argv[index + 1] != NULL &&
+                 argv[index + 1][0] != '-') {
         args_consumed += 1;
         eval_string = argv[index + 1];
         if (strncmp(eval_string, "\\-", 2) == 0) {
@@ -2778,9 +3021,8 @@ static void DispatchMessagesDebugAgentCallback() {
 
 
 // Called from the main thread.
-static void EnableDebug(bool wait_connect) {
+static void EnableDebug(Isolate* isolate, bool wait_connect) {
   assert(debugger_running == false);
-  Isolate* isolate = node_isolate;  // TODO(bnoordhuis) Multi-isolate support.
   Isolate::Scope isolate_scope(isolate);
   HandleScope handle_scope(isolate);
   v8::Debug::SetDebugMessageDispatchHandler(DispatchMessagesDebugAgentCallback,
@@ -2816,7 +3058,7 @@ static void EnableDebug(bool wait_connect) {
 static void DispatchDebugMessagesAsyncCallback(uv_async_t* handle, int status) {
   if (debugger_running == false) {
     fprintf(stderr, "Starting debugger agent.\n");
-    EnableDebug(false);
+    EnableDebug(node_isolate, false);
   }
   Isolate::Scope isolate_scope(node_isolate);
   v8::Debug::ProcessDebugMessages();
@@ -2857,10 +3099,11 @@ static void RegisterSignalHandler(int signal, void (*handler)(int signal)) {
 
 
 void DebugProcess(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   if (args.Length() != 1) {
-    return ThrowError("Invalid number of arguments.");
+    return env->ThrowError("Invalid number of arguments.");
   }
 
   pid_t pid;
@@ -2869,7 +3112,7 @@ void DebugProcess(const FunctionCallbackInfo<Value>& args) {
   pid = args[0]->IntegerValue();
   r = kill(pid, SIGUSR1);
   if (r != 0) {
-    return ThrowErrnoException(errno, "kill");
+    return env->ThrowErrnoException(errno, "kill");
   }
 }
 
@@ -2944,7 +3187,9 @@ static int RegisterDebugSignalHandler() {
 
 
 static void DebugProcess(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Isolate* isolate = args.GetIsolate();
+  Environment* env = Environment::GetCurrent(isolate);
+  HandleScope scope(isolate);
   DWORD pid;
   HANDLE process = NULL;
   HANDLE thread = NULL;
@@ -2953,7 +3198,7 @@ static void DebugProcess(const FunctionCallbackInfo<Value>& args) {
   LPTHREAD_START_ROUTINE* handler = NULL;
 
   if (args.Length() != 1) {
-    ThrowError("Invalid number of arguments.");
+    env->ThrowError("Invalid number of arguments.");
     goto out;
   }
 
@@ -2965,20 +3210,23 @@ static void DebugProcess(const FunctionCallbackInfo<Value>& args) {
                         FALSE,
                         pid);
   if (process == NULL) {
-    ThrowException(WinapiErrnoException(GetLastError(), "OpenProcess"));
+    isolate->ThrowException(
+        WinapiErrnoException(isolate, GetLastError(), "OpenProcess"));
     goto out;
   }
 
   if (GetDebugSignalHandlerMappingName(pid,
                                        mapping_name,
                                        ARRAY_SIZE(mapping_name)) < 0) {
-    ThrowErrnoException(errno, "sprintf");
+    env->ThrowErrnoException(errno, "sprintf");
     goto out;
   }
 
   mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mapping_name);
   if (mapping == NULL) {
-    ThrowException(WinapiErrnoException(GetLastError(), "OpenFileMappingW"));
+    isolate->ThrowException(WinapiErrnoException(isolate,
+                                             GetLastError(),
+                                             "OpenFileMappingW"));
     goto out;
   }
 
@@ -2989,7 +3237,8 @@ static void DebugProcess(const FunctionCallbackInfo<Value>& args) {
                     0,
                     sizeof *handler));
   if (handler == NULL || *handler == NULL) {
-    ThrowException(WinapiErrnoException(GetLastError(), "MapViewOfFile"));
+    isolate->ThrowException(
+        WinapiErrnoException(isolate, GetLastError(), "MapViewOfFile"));
     goto out;
   }
 
@@ -3001,13 +3250,17 @@ static void DebugProcess(const FunctionCallbackInfo<Value>& args) {
                               0,
                               NULL);
   if (thread == NULL) {
-    ThrowException(WinapiErrnoException(GetLastError(), "CreateRemoteThread"));
+    isolate->ThrowException(WinapiErrnoException(isolate,
+                                                 GetLastError(),
+                                                 "CreateRemoteThread"));
     goto out;
   }
 
   // Wait for the thread to terminate
   if (WaitForSingleObject(thread, INFINITE) != WAIT_OBJECT_0) {
-    ThrowException(WinapiErrnoException(GetLastError(), "WaitForSingleObject"));
+    isolate->ThrowException(WinapiErrnoException(isolate,
+                                                 GetLastError(),
+                                                 "WaitForSingleObject"));
     goto out;
   }
 
@@ -3025,7 +3278,7 @@ static void DebugProcess(const FunctionCallbackInfo<Value>& args) {
 
 
 static void DebugPause(const FunctionCallbackInfo<Value>& args) {
-  v8::Debug::DebugBreak(node_isolate);
+  v8::Debug::DebugBreak(args.GetIsolate());
 }
 
 
@@ -3130,7 +3383,7 @@ void Init(int* argc,
 
   // If the --debug flag was specified then initialize the debug thread.
   if (use_debug_agent) {
-    EnableDebug(debug_wait_connect);
+    EnableDebug(node_isolate, debug_wait_connect);
   } else {
     RegisterDebugSignalHandler();
   }
@@ -3169,24 +3422,25 @@ void AtExit(void (*cb)(void* arg), void* arg) {
 }
 
 
-void EmitExit(Environment* env) {
+int EmitExit(Environment* env) {
   // process.emit('exit')
   HandleScope handle_scope(env->isolate());
   Context::Scope context_scope(env->context());
   Local<Object> process_object = env->process_object();
-  process_object->Set(FIXED_ONE_BYTE_STRING(node_isolate, "_exiting"),
-                      True(node_isolate));
+  process_object->Set(env->exiting_string(), True(env->isolate()));
 
-  Handle<String> exitCode = FIXED_ONE_BYTE_STRING(node_isolate, "exitCode");
+  Handle<String> exitCode = env->exit_code_string();
   int code = process_object->Get(exitCode)->IntegerValue();
 
   Local<Value> args[] = {
-    FIXED_ONE_BYTE_STRING(node_isolate, "exit"),
-    Integer::New(code, node_isolate)
+    env->exit_string(),
+    Integer::New(code, env->isolate())
   };
 
   MakeCallback(env, process_object, "emit", ARRAY_SIZE(args), args);
-  exit(code);
+
+  // Reload exit code, it may be changed by `emit('exit')`
+  return process_object->Get(exitCode)->IntegerValue();
 }
 
 
@@ -3260,6 +3514,7 @@ int Start(int argc, char** argv) {
   V8::SetEntropySource(crypto::EntropySource);
 #endif
 
+  int code;
   V8::Initialize();
   {
     Locker locker(node_isolate);
@@ -3271,7 +3526,7 @@ int Start(int argc, char** argv) {
     // be removed.
     Context::Scope context_scope(env->context());
     uv_run(env->event_loop(), UV_RUN_DEFAULT);
-    EmitExit(env);
+    code = EmitExit(env);
     RunAtExit(env);
     env->Dispose();
     env = NULL;
@@ -3285,7 +3540,7 @@ int Start(int argc, char** argv) {
   delete[] exec_argv;
   exec_argv = NULL;
 
-  return 0;
+  return code;
 }
 
 

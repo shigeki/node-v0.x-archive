@@ -40,6 +40,10 @@
 extern char **environ;
 #endif
 
+#ifdef __linux__
+# include <grp.h>
+#endif
+
 
 static QUEUE* uv__process_queue(uv_loop_t* loop, int pid) {
   assert(pid > 0);
@@ -287,40 +291,58 @@ static void uv__process_child_init(const uv_process_options_t* options,
     close_fd = pipes[fd][0];
     use_fd = pipes[fd][1];
 
-    if (use_fd >= 0) {
-      if (close_fd != -1)
-        uv__close(close_fd);
-    }
-    else if (fd >= 3)
-      continue;
-    else {
-      /* redirect stdin, stdout and stderr to /dev/null even if UV_IGNORE is
-       * set
-       */
-      use_fd = open("/dev/null", fd == 0 ? O_RDONLY : O_RDWR);
+    if (use_fd < 0) {
+      if (fd >= 3)
+        continue;
+      else {
+        /* redirect stdin, stdout and stderr to /dev/null even if UV_IGNORE is
+         * set
+         */
+        use_fd = open("/dev/null", fd == 0 ? O_RDONLY : O_RDWR);
+        close_fd = use_fd;
 
-      if (use_fd == -1) {
+        if (use_fd == -1) {
         uv__write_int(error_fd, -errno);
-        perror("failed to open stdio");
-        _exit(127);
+          perror("failed to open stdio");
+          _exit(127);
+        }
       }
     }
 
     if (fd == use_fd)
       uv__cloexec(use_fd, 0);
-    else {
+    else
       dup2(use_fd, fd);
-      uv__close(use_fd);
-    }
 
     if (fd <= 2)
       uv__nonblock(fd, 0);
+
+    if (close_fd != -1)
+      uv__close(close_fd);
+  }
+
+  for (fd = 0; fd < stdio_count; fd++) {
+    use_fd = pipes[fd][1];
+
+    if (use_fd >= 0 && fd != use_fd)
+      close(use_fd);
   }
 
   if (options->cwd != NULL && chdir(options->cwd)) {
     uv__write_int(error_fd, -errno);
     perror("chdir()");
     _exit(127);
+  }
+
+  if (options->flags & (UV_PROCESS_SETUID | UV_PROCESS_SETGID)) {
+    /* When dropping privileges from root, the `setgroups` call will
+     * remove any extraneous groups. If we don't call this, then
+     * even though our uid has dropped, we may still have groups
+     * that enable us to do super-user things. This will fail if we
+     * aren't root, so don't bother checking the return value, this
+     * is just done as an optimistic privilege dropping function.
+     */
+    SAVE_ERRNO(setgroups(0, NULL));
   }
 
   if ((options->flags & UV_PROCESS_SETGID) && setgid(options->gid)) {
@@ -415,10 +437,13 @@ int uv_spawn(uv_loop_t* loop,
 
   uv_signal_start(&loop->child_watcher, uv__chld, SIGCHLD);
 
+  /* Acquire write lock to prevent opening new fds in worker threads */
+  uv_rwlock_wrlock(&loop->cloexec_lock);
   pid = fork();
 
   if (pid == -1) {
     err = -errno;
+    uv_rwlock_wrunlock(&loop->cloexec_lock);
     uv__close(signal_pipe[0]);
     uv__close(signal_pipe[1]);
     goto error;
@@ -429,6 +454,8 @@ int uv_spawn(uv_loop_t* loop,
     abort();
   }
 
+  /* Release lock in parent process */
+  uv_rwlock_wrunlock(&loop->cloexec_lock);
   uv__close(signal_pipe[1]);
 
   process->status = 0;

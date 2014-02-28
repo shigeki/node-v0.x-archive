@@ -24,9 +24,9 @@
 
 #define NODE_MAJOR_VERSION 0
 #define NODE_MINOR_VERSION 11
-#define NODE_PATCH_VERSION 10
+#define NODE_PATCH_VERSION 12
 
-#define NODE_VERSION_IS_RELEASE 1
+#define NODE_VERSION_IS_RELEASE 0
 
 #ifndef NODE_TAG
 # define NODE_TAG ""
@@ -64,6 +64,6 @@
  * an API is broken in the C++ side, including in v8 or
  * other dependencies.
  */
-#define NODE_MODULE_VERSION 13 /* v0.12 */
+#define NODE_MODULE_VERSION 14 /* v0.12 */
 
 #endif  /* SRC_NODE_VERSION_H_ */

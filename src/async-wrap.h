@@ -32,23 +32,39 @@ class AsyncWrap : public BaseObject {
  public:
   enum AsyncFlags {
     NO_OPTIONS = 0,
-    ASYNC_LISTENERS = 1
+    HAS_ASYNC_LISTENER = 1
   };
 
-  inline AsyncWrap(Environment* env, v8::Handle<v8::Object> object);
+  enum ProviderType {
+    PROVIDER_NONE               = 1 << 0,
+    PROVIDER_CARES              = 1 << 1,
+    PROVIDER_CONNECTWRAP        = 1 << 2,
+    PROVIDER_CRYPTO             = 1 << 3,
+    PROVIDER_FSEVENTWRAP        = 1 << 4,
+    PROVIDER_GETADDRINFOREQWRAP = 1 << 5,
+    PROVIDER_PIPEWRAP           = 1 << 6,
+    PROVIDER_PROCESSWRAP        = 1 << 7,
+    PROVIDER_REQWRAP            = 1 << 8,
+    PROVIDER_SHUTDOWNWRAP       = 1 << 9,
+    PROVIDER_SIGNALWRAP         = 1 << 10,
+    PROVIDER_STATWATCHER        = 1 << 11,
+    PROVIDER_TCPWRAP            = 1 << 12,
+    PROVIDER_TIMERWRAP          = 1 << 13,
+    PROVIDER_TLSWRAP            = 1 << 14,
+    PROVIDER_TTYWRAP            = 1 << 15,
+    PROVIDER_UDPWRAP            = 1 << 16,
+    PROVIDER_ZLIB               = 1 << 17
+  };
+
+  inline AsyncWrap(Environment* env,
+                   v8::Handle<v8::Object> object,
+                   ProviderType provider);
 
   inline ~AsyncWrap();
 
-  template <typename Type>
-  static inline void AddMethods(v8::Handle<v8::FunctionTemplate> t);
+  inline bool has_async_listener();
 
-  inline uint32_t async_flags() const;
-
-  inline void set_flag(unsigned int flag);
-
-  inline void remove_flag(unsigned int flag);
-
-  inline bool has_async_queue();
+  inline uint32_t provider_type() const;
 
   // Only call these within a valid HandleScope.
   inline v8::Handle<v8::Value> MakeCallback(const v8::Handle<v8::Function> cb,
@@ -62,17 +78,17 @@ class AsyncWrap : public BaseObject {
                                             v8::Handle<v8::Value>* argv);
 
  private:
-  // Add an async listener to an existing handle.
-  template <typename Type>
-  static inline void AddAsyncListener(
-      const v8::FunctionCallbackInfo<v8::Value>& args);
+  inline AsyncWrap();
 
-  // Remove an async listener to an existing handle.
-  template <typename Type>
-  static inline void RemoveAsyncListener(
-      const v8::FunctionCallbackInfo<v8::Value>& args);
+  // TODO(trevnorris): BURN IN FIRE! Remove this as soon as a suitable
+  // replacement is committed.
+  inline v8::Handle<v8::Value> MakeDomainCallback(
+      const v8::Handle<v8::Function> cb,
+      int argc,
+      v8::Handle<v8::Value>* argv);
 
   uint32_t async_flags_;
+  uint32_t provider_type_;
 };
 
 }  // namespace node

@@ -21,8 +21,7 @@
 
 var common = require('../common');
 var assert = require('assert');
-
-function onAsync() {}
+var tracing = require('tracing');
 
 var results = [];
 var asyncNoHandleError = {
@@ -39,8 +38,8 @@ var asyncHandleError = {
 };
 
 var listeners = [
-  process.addAsyncListener(onAsync, asyncHandleError),
-  process.addAsyncListener(onAsync, asyncNoHandleError)
+  tracing.addAsyncListener(asyncHandleError),
+  tracing.addAsyncListener(asyncNoHandleError)
 ];
 
 // Even if an error handler returns true, both should fire.
@@ -48,8 +47,8 @@ process.nextTick(function() {
   throw new Error();
 });
 
-process.removeAsyncListener(listeners[0]);
-process.removeAsyncListener(listeners[1]);
+tracing.removeAsyncListener(listeners[0]);
+tracing.removeAsyncListener(listeners[1]);
 
 process.on('exit', function(code) {
   // If the exit code isn't ok then return early to throw the stack that

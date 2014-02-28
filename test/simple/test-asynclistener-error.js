@@ -24,16 +24,15 @@ var assert = require('assert');
 var dns = require('dns');
 var fs = require('fs');
 var net = require('net');
+var tracing = require('tracing');
 
-var addListener = process.addAsyncListener;
-var removeListener = process.removeAsyncListener;
+var addListener = tracing.addAsyncListener;
+var removeListener = tracing.removeAsyncListener;
 var errorMsgs = [];
 var currentMsg = '';
 var caught = 0;
 var expectCaught = 0;
 var exitCbRan = false;
-
-function asyncL() { }
 
 var callbacksObj = {
   error: function(value, er) {
@@ -48,7 +47,7 @@ var callbacksObj = {
   }
 };
 
-var listener = process.createAsyncListener(asyncL, callbacksObj);
+var listener = tracing.createAsyncListener(callbacksObj);
 
 process.on('exit', function(code) {
   removeListener(listener);

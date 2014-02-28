@@ -21,6 +21,7 @@
 
 var common = require('../common');
 var assert = require('assert');
+var tracing = require('tracing');
 
 function onAsync0() {
   return 0;
@@ -30,16 +31,23 @@ function onAsync1() {
   return 1;
 }
 
+function onError(stor) {
+  results.push(stor);
+}
+
 var results = [];
-var asyncNoHandleError = {
-  error: function(stor) {
-    results.push(stor);
-  }
+var asyncNoHandleError0 = {
+  create: onAsync0,
+  error: onError
+};
+var asyncNoHandleError1 = {
+  create: onAsync1,
+  error: onError
 };
 
 var listeners = [
-  process.addAsyncListener(onAsync0, asyncNoHandleError),
-  process.addAsyncListener(onAsync1, asyncNoHandleError)
+  tracing.addAsyncListener(asyncNoHandleError0),
+  tracing.addAsyncListener(asyncNoHandleError1)
 ];
 
 var uncaughtFired = false;
@@ -64,7 +72,7 @@ process.on('exit', function(code) {
 
   // Need to remove the async listeners or tests will always pass
   for (var i = 0; i < listeners.length; i++)
-    process.removeAsyncListener(listeners[i]);
+    tracing.removeAsyncListener(listeners[i]);
 
   assert.ok(uncaughtFired);
   console.log('ok');

@@ -61,18 +61,46 @@
 #include "v8.h"  // NOLINT(build/include_order)
 #include "node_version.h"  // NODE_MODULE_VERSION
 
+#define NODE_DEPRECATED(msg, fn) V8_DEPRECATED(msg, fn)
+
 // Forward-declare these functions now to stop MSVS from becoming
 // terminally confused when it's done in node_internals.h
 namespace node {
 
-NODE_EXTERN v8::Local<v8::Value> ErrnoException(int errorno,
+NODE_EXTERN v8::Local<v8::Value> ErrnoException(v8::Isolate* isolate,
+                                                int errorno,
                                                 const char* syscall = NULL,
                                                 const char* message = NULL,
                                                 const char* path = NULL);
-NODE_EXTERN v8::Local<v8::Value> UVException(int errorno,
+NODE_EXTERN v8::Local<v8::Value> UVException(v8::Isolate* isolate,
+                                             int errorno,
                                              const char* syscall = NULL,
                                              const char* message = NULL,
                                              const char* path = NULL);
+
+NODE_DEPRECATED("Use UVException(isolate, ...)",
+                inline v8::Local<v8::Value> ErrnoException(
+      int errorno,
+      const char* syscall = NULL,
+      const char* message = NULL,
+      const char* path = NULL) {
+  return ErrnoException(v8::Isolate::GetCurrent(),
+                        errorno,
+                        syscall,
+                        message,
+                        path);
+})
+
+inline v8::Local<v8::Value> UVException(int errorno,
+                                        const char* syscall = NULL,
+                                        const char* message = NULL,
+                                        const char* path = NULL) {
+  return UVException(v8::Isolate::GetCurrent(),
+                     errorno,
+                     syscall,
+                     message,
+                     path);
+}
 
 /*
  * MakeCallback doesn't have a HandleScope. That means the callers scope
@@ -86,18 +114,18 @@ NODE_EXTERN v8::Local<v8::Value> UVException(int errorno,
  */
 
 NODE_EXTERN v8::Handle<v8::Value> MakeCallback(
-    const v8::Handle<v8::Object> recv,
+    v8::Handle<v8::Object> recv,
     const char* method,
     int argc,
     v8::Handle<v8::Value>* argv);
 NODE_EXTERN v8::Handle<v8::Value> MakeCallback(
-    const v8::Handle<v8::Object> object,
-    const v8::Handle<v8::String> symbol,
+    v8::Handle<v8::Object> recv,
+    v8::Handle<v8::String> symbol,
     int argc,
     v8::Handle<v8::Value>* argv);
 NODE_EXTERN v8::Handle<v8::Value> MakeCallback(
-    const v8::Handle<v8::Object> object,
-    const v8::Handle<v8::Function> callback,
+    v8::Handle<v8::Object> recv,
+    v8::Handle<v8::Function> callback,
     int argc,
     v8::Handle<v8::Value>* argv);
 
@@ -121,6 +149,17 @@ NODE_EXTERN v8::Handle<v8::Value> MakeCallback(
 #  define STATIC_ASSERT(expr) static_cast<void>((sizeof(char[-1 + !!(expr)])))
 # endif
 #endif
+
+#ifdef _WIN32
+// TODO(tjfontaine) consider changing the usage of ssize_t to ptrdiff_t
+#if !defined(_SSIZE_T_) && !defined(_SSIZE_T_DEFINED)
+typedef intptr_t ssize_t;
+# define _SSIZE_T_
+# define _SSIZE_T_DEFINED
+#endif
+#else  // !_WIN32
+# include <sys/types.h>  // size_t, ssize_t
+#endif  // _WIN32
 
 
 namespace node {
@@ -176,57 +215,112 @@ inline void NODE_SET_PROTOTYPE_METHOD(v8::Handle<v8::FunctionTemplate> recv,
 #define NODE_SET_PROTOTYPE_METHOD node::NODE_SET_PROTOTYPE_METHOD
 
 enum encoding {ASCII, UTF8, BASE64, UCS2, BINARY, HEX, BUFFER};
-enum encoding ParseEncoding(v8::Handle<v8::Value> encoding_v,
+enum encoding ParseEncoding(v8::Isolate* isolate,
+                            v8::Handle<v8::Value> encoding_v,
                             enum encoding _default = BINARY);
-NODE_EXTERN void FatalException(const v8::TryCatch& try_catch);
-void DisplayExceptionLine(v8::Handle<v8::Message> message);
+NODE_DEPRECATED("Use ParseEncoding(isolate, ...)",
+                inline enum encoding ParseEncoding(
+      v8::Handle<v8::Value> encoding_v,
+      enum encoding _default = BINARY) {
+  return ParseEncoding(v8::Isolate::GetCurrent(), encoding_v, _default);
+})
 
-NODE_EXTERN v8::Local<v8::Value> Encode(const void *buf, size_t len,
+NODE_EXTERN void FatalException(v8::Isolate* isolate,
+                                const v8::TryCatch& try_catch);
+
+NODE_DEPRECATED("Use FatalException(isolate, ...)",
+                inline void FatalException(const v8::TryCatch& try_catch) {
+  return FatalException(v8::Isolate::GetCurrent(), try_catch);
+})
+
+NODE_EXTERN v8::Local<v8::Value> Encode(v8::Isolate* isolate,
+                                        const void* buf,
+                                        size_t len,
                                         enum encoding encoding = BINARY);
+NODE_DEPRECATED("Use Encode(isolate, ...)",
+                inline v8::Local<v8::Value> Encode(
+    const void* buf,
+    size_t len,
+    enum encoding encoding = BINARY) {
+  return Encode(v8::Isolate::GetCurrent(), buf, len, encoding);
+})
 
 // Returns -1 if the handle was not valid for decoding
-NODE_EXTERN ssize_t DecodeBytes(v8::Handle<v8::Value>,
+NODE_EXTERN ssize_t DecodeBytes(v8::Isolate* isolate,
+                                v8::Handle<v8::Value>,
                                 enum encoding encoding = BINARY);
+NODE_DEPRECATED("Use DecodeBytes(isolate, ...)",
+                inline ssize_t DecodeBytes(
+    v8::Handle<v8::Value> val,
+    enum encoding encoding = BINARY) {
+  return DecodeBytes(v8::Isolate::GetCurrent(), val, encoding);
+})
 
 // returns bytes written.
-NODE_EXTERN ssize_t DecodeWrite(char *buf,
+NODE_EXTERN ssize_t DecodeWrite(v8::Isolate* isolate,
+                                char* buf,
                                 size_t buflen,
                                 v8::Handle<v8::Value>,
                                 enum encoding encoding = BINARY);
+NODE_DEPRECATED("Use DecodeWrite(isolate, ...)",
+                inline ssize_t DecodeWrite(char* buf,
+                                           size_t buflen,
+                                           v8::Handle<v8::Value> val,
+                                           enum encoding encoding = BINARY) {
+  return DecodeWrite(v8::Isolate::GetCurrent(), buf, buflen, val, encoding);
+})
 
 #ifdef _WIN32
-NODE_EXTERN v8::Local<v8::Value> WinapiErrnoException(int errorno,
-    const char *syscall = NULL,  const char *msg = "",
+NODE_EXTERN v8::Local<v8::Value> WinapiErrnoException(
+    v8::Isolate* isolate,
+    int errorno,
+    const char *syscall = NULL,
+    const char *msg = "",
     const char *path = NULL);
+
+NODE_DEPRECATED("Use WinapiErrnoException(isolate, ...)",
+                inline v8::Local<v8::Value> WinapiErrnoException(int errorno,
+    const char *syscall = NULL,  const char *msg = "",
+    const char *path = NULL) {
+  return WinapiErrnoException(v8::Isolate::GetCurrent(),
+                              errorno,
+                              syscall,
+                              msg,
+                              path);
+})
 #endif
 
 const char *signo_string(int errorno);
 
 
-NODE_EXTERN typedef void (*addon_register_func)(
-    v8::Handle<v8::Object> exports,
-    v8::Handle<v8::Value> module);
-
-NODE_EXTERN typedef void (*addon_context_register_func)(
+typedef void (*addon_register_func)(
     v8::Handle<v8::Object> exports,
     v8::Handle<v8::Value> module,
-    v8::Handle<v8::Context> context);
+    void* priv);
 
-struct node_module_struct {
-  int version;
-  void *dso_handle;
-  const char *filename;
-  node::addon_register_func register_func;
-  node::addon_context_register_func register_context_func;
-  const char *modname;
+typedef void (*addon_context_register_func)(
+    v8::Handle<v8::Object> exports,
+    v8::Handle<v8::Value> module,
+    v8::Handle<v8::Context> context,
+    void* priv);
+
+#define NM_F_BUILTIN 0x01
+
+struct node_module {
+  int nm_version;
+  unsigned int nm_flags;
+  void* nm_dso_handle;
+  const char* nm_filename;
+  node::addon_register_func nm_register_func;
+  node::addon_context_register_func nm_context_register_func;
+  const char* nm_modname;
+  void* nm_priv;
+  struct node_module* nm_link;
 };
 
-node_module_struct* get_builtin_module(const char *name);
+node_module* get_builtin_module(const char *name);
 
-#define NODE_STANDARD_MODULE_STUFF \
-          NODE_MODULE_VERSION,     \
-          NULL,                    \
-          __FILE__
+extern "C" NODE_EXTERN void node_module_register(void* mod);
 
 #ifdef _WIN32
 # define NODE_MODULE_EXPORT __declspec(dllexport)
@@ -234,30 +328,70 @@ node_module_struct* get_builtin_module(const char *name);
 # define NODE_MODULE_EXPORT /* empty */
 #endif
 
-#define NODE_MODULE(modname, regfunc)                                 \
+#if defined(_MSC_VER)
+#pragma section(".CRT$XCU", read)
+#define NODE_C_CTOR(fn)                                               \
+  static void __cdecl fn(void);                                       \
+  __declspec(dllexport, allocate(".CRT$XCU"))                         \
+      void (__cdecl*fn ## _)(void) = fn;                              \
+  static void __cdecl fn(void)
+#else
+#define NODE_C_CTOR(fn)                                               \
+  static void fn(void) __attribute__((constructor));                  \
+  static void fn(void)
+#endif
+
+#define NODE_MODULE_X(modname, regfunc, priv, flags)                  \
   extern "C" {                                                        \
-    NODE_MODULE_EXPORT node::node_module_struct modname ## _module =  \
+    static node::node_module _module =                                \
     {                                                                 \
-      NODE_STANDARD_MODULE_STUFF,                                     \
+      NODE_MODULE_VERSION,                                            \
+      flags,                                                          \
+      NULL,                                                           \
+      __FILE__,                                                       \
       (node::addon_register_func) (regfunc),                          \
       NULL,                                                           \
-      NODE_STRINGIFY(modname)                                         \
+      NODE_STRINGIFY(modname),                                        \
+      priv,                                                           \
+      NULL                                                            \
     };                                                                \
+    NODE_C_CTOR(_register_ ## modname) {                              \
+      node_module_register(&_module);                                 \
+    }                                                                 \
   }
+
+#define NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, priv, flags)    \
+  extern "C" {                                                        \
+    static node::node_module _module =                                \
+    {                                                                 \
+      NODE_MODULE_VERSION,                                            \
+      flags,                                                          \
+      NULL,                                                           \
+      __FILE__,                                                       \
+      NULL,                                                           \
+      (node::addon_context_register_func) (regfunc),                  \
+      NODE_STRINGIFY(modname),                                        \
+      priv,                                                           \
+      NULL                                                            \
+    };                                                                \
+    NODE_C_CTOR(_register_ ## modname) {                              \
+      node_module_register(&_module);                                 \
+    }                                                                 \
+  }
+
+#define NODE_MODULE(modname, regfunc)                                 \
+  NODE_MODULE_X(modname, regfunc, NULL, 0)
 
 #define NODE_MODULE_CONTEXT_AWARE(modname, regfunc)                   \
-  extern "C" {                                                        \
-    NODE_MODULE_EXPORT node::node_module_struct modname ## _module =  \
-    {                                                                 \
-      NODE_STANDARD_MODULE_STUFF,                                     \
-      NULL,                                                           \
-      (regfunc),                                                      \
-      NODE_STRINGIFY(modname)                                         \
-    };                                                                \
-  }
+  NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, NULL, 0)
 
-#define NODE_MODULE_DECL(modname) \
-  extern "C" node::node_module_struct modname ## _module;
+#define NODE_MODULE_CONTEXT_AWARE_BUILTIN(modname, regfunc)           \
+  NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, NULL, NM_F_BUILTIN)   \
+
+/*
+ * For backward compatibility in add-on modules.
+ */
+#define NODE_MODULE_DECL /* nothing */
 
 /* Called after the event loop exits but before the VM is disposed.
  * Callbacks are run in reverse order of registration, i.e. newest first.

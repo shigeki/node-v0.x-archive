@@ -58,28 +58,36 @@ static const int X509_NAME_FLAGS = ASN1_STRFLGS_ESC_CTRL
                                  | XN_FLAG_FN_SN;
 
 
+size_t TLSCallbacks::error_off_;
+char TLSCallbacks::error_buf_[1024];
+
+
 TLSCallbacks::TLSCallbacks(Environment* env,
                            Kind kind,
                            Handle<Object> sc,
                            StreamWrapCallbacks* old)
     : SSLWrap<TLSCallbacks>(env, Unwrap<SecureContext>(sc), kind),
       StreamWrapCallbacks(old),
-      AsyncWrap(env, env->tls_wrap_constructor_function()->NewInstance()),
+      AsyncWrap(env,
+                env->tls_wrap_constructor_function()->NewInstance(),
+                AsyncWrap::PROVIDER_TLSWRAP),
       sc_(Unwrap<SecureContext>(sc)),
       sc_handle_(env->isolate(), sc),
       enc_in_(NULL),
       enc_out_(NULL),
       clear_in_(NULL),
       write_size_(0),
-      pending_write_item_(NULL),
       started_(false),
       established_(false),
       shutdown_(false),
+      error_(NULL),
+      cycle_depth_(0),
       eof_(false) {
   node::Wrap<TLSCallbacks>(object(), this);
 
   // Initialize queue for clearIn writes
   QUEUE_INIT(&write_item_queue_);
+  QUEUE_INIT(&pending_write_items_);
 
   // We've our own session callbacks
   SSL_CTX_sess_set_get_cb(sc_->ctx_, SSLWrap<TLSCallbacks>::GetSessionCallback);
@@ -102,25 +110,57 @@ TLSCallbacks::~TLSCallbacks() {
 #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
   sni_context_.Dispose();
 #endif  // SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
+
+  // Move all writes to pending
+  MakePending();
+
+  // And destroy
+  while (!QUEUE_EMPTY(&pending_write_items_)) {
+    QUEUE* q = QUEUE_HEAD(&pending_write_items_);
+    QUEUE_REMOVE(q);
+
+    WriteItem* wi = QUEUE_DATA(q, WriteItem, member_);
+    delete wi;
+  }
 }
 
 
-void TLSCallbacks::InvokeQueued(int status) {
-  // Empty queue - ignore call
-  if (pending_write_item_ == NULL)
+void TLSCallbacks::MakePending() {
+  // Aliases
+  QUEUE* from = &write_item_queue_;
+  QUEUE* to = &pending_write_items_;
+
+  if (QUEUE_EMPTY(from))
     return;
 
-  QUEUE* q = &pending_write_item_->member_;
-  pending_write_item_ = NULL;
+  // Add items to pending
+  QUEUE_ADD(to, from);
+
+  // Empty original queue
+  QUEUE_INIT(from);
+}
+
+
+bool TLSCallbacks::InvokeQueued(int status) {
+  if (QUEUE_EMPTY(&pending_write_items_))
+    return false;
 
   // Process old queue
-  while (q != &write_item_queue_) {
-    QUEUE* next = static_cast<QUEUE*>(QUEUE_NEXT(q));
-    WriteItem* wi = CONTAINER_OF(q, WriteItem, member_);
+  while (!QUEUE_EMPTY(&pending_write_items_)) {
+    QUEUE* q = QUEUE_HEAD(&pending_write_items_);
+    QUEUE_REMOVE(q);
+
+    WriteItem* wi = QUEUE_DATA(q, WriteItem, member_);
     wi->cb_(&wi->w_->req_, status);
     delete wi;
-    q = next;
   }
+
+  return true;
+}
+
+
+void TLSCallbacks::NewSessionDoneCb() {
+  Cycle();
 }
 
 
@@ -170,12 +210,16 @@ void TLSCallbacks::Wrap(const FunctionCallbackInfo<Value>& args) {
   HandleScope handle_scope(args.GetIsolate());
   Environment* env = Environment::GetCurrent(args.GetIsolate());
 
-  if (args.Length() < 1 || !args[0]->IsObject())
-    return ThrowTypeError("First argument should be a StreamWrap instance");
-  if (args.Length() < 2 || !args[1]->IsObject())
-    return ThrowTypeError("Second argument should be a SecureContext instance");
+  if (args.Length() < 1 || !args[0]->IsObject()) {
+    return env->ThrowTypeError(
+        "First argument should be a StreamWrap instance");
+  }
+  if (args.Length() < 2 || !args[1]->IsObject()) {
+    return env->ThrowTypeError(
+        "Second argument should be a SecureContext instance");
+  }
   if (args.Length() < 3 || !args[2]->IsBoolean())
-    return ThrowTypeError("Third argument should be boolean");
+    return env->ThrowTypeError("Third argument should be boolean");
 
   Local<Object> stream = args[0].As<Object>();
   Local<Object> sc = args[1].As<Object>();
@@ -196,13 +240,39 @@ void TLSCallbacks::Wrap(const FunctionCallbackInfo<Value>& args) {
 }
 
 
+void TLSCallbacks::Receive(const FunctionCallbackInfo<Value>& args) {
+  HandleScope handle_scope(args.GetIsolate());
+
+  TLSCallbacks* wrap = Unwrap<TLSCallbacks>(args.This());
+
+  CHECK(Buffer::HasInstance(args[0]));
+  char* data = Buffer::Data(args[0]);
+  size_t len = Buffer::Length(args[0]);
+
+  uv_buf_t buf;
+  uv_stream_t* stream = wrap->wrap()->stream();
+
+  // Copy given buffer entirely or partiall if handle becomes closed
+  while (len > 0 && !uv_is_closing(reinterpret_cast<uv_handle_t*>(stream))) {
+    wrap->DoAlloc(reinterpret_cast<uv_handle_t*>(stream), len, &buf);
+    size_t copy = buf.len > len ? len : buf.len;
+    memcpy(buf.base, data, copy);
+    wrap->DoRead(stream, buf.len, &buf, UV_UNKNOWN_HANDLE);
+
+    data += copy;
+    len -= copy;
+  }
+}
+
+
 void TLSCallbacks::Start(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   TLSCallbacks* wrap = Unwrap<TLSCallbacks>(args.This());
 
   if (wrap->started_)
-    return ThrowError("Already started.");
+    return env->ThrowError("Already started.");
   wrap->started_ = true;
 
   // Send ClientHello handshake
@@ -251,17 +321,18 @@ void TLSCallbacks::EncOut() {
   if (write_size_ != 0)
     return;
 
+  // Wait for `newSession` callback to be invoked
+  if (is_waiting_new_session())
+    return;
+
   // Split-off queue
-  if (established_ && !QUEUE_EMPTY(&write_item_queue_)) {
-    pending_write_item_ = CONTAINER_OF(QUEUE_NEXT(&write_item_queue_),
-                                       WriteItem,
-                                       member_);
-    QUEUE_INIT(&write_item_queue_);
-  }
+  if (established_ && !QUEUE_EMPTY(&write_item_queue_))
+    MakePending();
 
   // No data to write
   if (BIO_pending(enc_out_) == 0) {
-    InvokeQueued(0);
+    if (clear_in_->Length() == 0)
+      InvokeQueued(0);
     return;
   }
 
@@ -290,7 +361,6 @@ void TLSCallbacks::EncOut() {
 
 void TLSCallbacks::EncOutCb(uv_write_t* req, int status) {
   TLSCallbacks* callbacks = static_cast<TLSCallbacks*>(req->data);
-  Environment* env = callbacks->env();
 
   // Handle error
   if (status) {
@@ -299,12 +369,6 @@ void TLSCallbacks::EncOutCb(uv_write_t* req, int status) {
       return;
 
     // Notify about error
-    HandleScope handle_scope(env->isolate());
-    Context::Scope context_scope(env->context());
-    Local<Value> arg = String::Concat(
-        FIXED_ONE_BYTE_STRING(node_isolate, "write cb error, status: "),
-        Integer::New(status, node_isolate)->ToString());
-    callbacks->MakeCallback(env->onerror_string(), 1, &arg);
     callbacks->InvokeQueued(status);
     return;
   }
@@ -318,8 +382,34 @@ void TLSCallbacks::EncOutCb(uv_write_t* req, int status) {
 }
 
 
-Local<Value> TLSCallbacks::GetSSLError(int status, int* err) {
-  HandleScope scope(node_isolate);
+int TLSCallbacks::PrintErrorsCb(const char* str, size_t len, void* arg) {
+  size_t to_copy = error_off_;
+  size_t avail = sizeof(error_buf_) - error_off_ - 1;
+
+  if (avail > to_copy)
+    to_copy = avail;
+
+  memcpy(error_buf_, str, avail);
+  error_off_ += avail;
+  assert(error_off_ < sizeof(error_buf_));
+
+  // Zero-terminate
+  error_buf_[error_off_] = '\0';
+
+  return 0;
+}
+
+
+const char* TLSCallbacks::PrintErrors() {
+  error_off_ = 0;
+  ERR_print_errors_cb(PrintErrorsCb, this);
+
+  return error_buf_;
+}
+
+
+Local<Value> TLSCallbacks::GetSSLError(int status, int* err, const char** msg) {
+  HandleScope scope(env()->isolate());
 
   *err = SSL_get_error(ssl_, status);
   switch (*err) {
@@ -328,23 +418,22 @@ Local<Value> TLSCallbacks::GetSSLError(int status, int* err) {
     case SSL_ERROR_WANT_WRITE:
       break;
     case SSL_ERROR_ZERO_RETURN:
-      return scope.Close(FIXED_ONE_BYTE_STRING(node_isolate, "ZERO_RETURN"));
+      return scope.Close(env()->zero_return_string());
       break;
     default:
       {
-        BUF_MEM* mem;
-        BIO* bio;
-
         assert(*err == SSL_ERROR_SSL || *err == SSL_ERROR_SYSCALL);
 
-        bio = BIO_new(BIO_s_mem());
-        assert(bio != NULL);
-        ERR_print_errors(bio);
-        BIO_get_mem_ptr(bio, &mem);
+        const char* buf = PrintErrors();
+
         Local<String> message =
-            OneByteString(node_isolate, mem->data, mem->length);
+            OneByteString(env()->isolate(), buf, strlen(buf));
         Local<Value> exception = Exception::Error(message);
-        BIO_free_all(bio);
+
+        if (msg != NULL) {
+          assert(*msg == NULL);
+          *msg = buf;
+        }
 
         return scope.Close(exception);
       }
@@ -369,7 +458,7 @@ void TLSCallbacks::ClearOut() {
     read = SSL_read(ssl_, out, sizeof(out));
     if (read > 0) {
       Local<Value> argv[] = {
-        Integer::New(read, node_isolate),
+        Integer::New(read, env()->isolate()),
         Buffer::New(env(), out, read)
       };
       wrap()->MakeCallback(env()->onread_string(), ARRAY_SIZE(argv), argv);
@@ -379,13 +468,13 @@ void TLSCallbacks::ClearOut() {
   int flags = SSL_get_shutdown(ssl_);
   if (!eof_ && flags & SSL_RECEIVED_SHUTDOWN) {
     eof_ = true;
-    Local<Value> arg = Integer::New(UV_EOF, node_isolate);
+    Local<Value> arg = Integer::New(UV_EOF, env()->isolate());
     wrap()->MakeCallback(env()->onread_string(), 1, &arg);
   }
 
   if (read == -1) {
     int err;
-    Handle<Value> arg = GetSSLError(read, &err);
+    Local<Value> arg = GetSSLError(read, &err, NULL);
 
     if (!arg.IsEmpty()) {
       MakeCallback(env()->onerror_string(), 1, &arg);
@@ -421,12 +510,28 @@ bool TLSCallbacks::ClearIn() {
 
   // Error or partial write
   int err;
-  Handle<Value> arg = GetSSLError(written, &err);
+  Local<Value> arg = GetSSLError(written, &err, &error_);
   if (!arg.IsEmpty()) {
-    MakeCallback(env()->onerror_string(), 1, &arg);
+    MakePending();
+    if (!InvokeQueued(UV_EPROTO))
+      error_ = NULL;
+    clear_in_->Reset();
   }
 
   return false;
+}
+
+
+const char* TLSCallbacks::Error() {
+  const char* ret = error_;
+  error_ = NULL;
+  return ret;
+}
+
+
+int TLSCallbacks::TryWrite(uv_buf_t** bufs, size_t* count) {
+  // TODO(indutny): Support it
+  return -1;
 }
 
 
@@ -484,11 +589,9 @@ int TLSCallbacks::DoWrite(WriteWrap* w,
     int err;
     HandleScope handle_scope(env()->isolate());
     Context::Scope context_scope(env()->context());
-    Handle<Value> arg = GetSSLError(written, &err);
-    if (!arg.IsEmpty()) {
-      MakeCallback(env()->onerror_string(), 1, &arg);
-      return -1;
-    }
+    Local<Value> arg = GetSSLError(written, &err, &error_);
+    if (!arg.IsEmpty())
+      return UV_EPROTO;
 
     // No errors, queue rest
     for (; i < count; i++)
@@ -532,7 +635,7 @@ void TLSCallbacks::DoRead(uv_stream_t* handle,
 
     HandleScope handle_scope(env()->isolate());
     Context::Scope context_scope(env()->context());
-    Local<Value> arg = Integer::New(nread, node_isolate);
+    Local<Value> arg = Integer::New(nread, env()->isolate());
     wrap()->MakeCallback(env()->onread_string(), 1, &arg);
     return;
   }
@@ -567,12 +670,13 @@ int TLSCallbacks::DoShutdown(ShutdownWrap* req_wrap, uv_shutdown_cb cb) {
 
 
 void TLSCallbacks::SetVerifyMode(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   TLSCallbacks* wrap = Unwrap<TLSCallbacks>(args.This());
 
   if (args.Length() < 2 || !args[0]->IsBoolean() || !args[1]->IsBoolean())
-    return ThrowTypeError("Bad arguments, expected two booleans");
+    return env->ThrowTypeError("Bad arguments, expected two booleans");
 
   int verify_mode;
   if (wrap->is_server()) {
@@ -598,7 +702,8 @@ void TLSCallbacks::SetVerifyMode(const FunctionCallbackInfo<Value>& args) {
 
 void TLSCallbacks::EnableSessionCallbacks(
     const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   TLSCallbacks* wrap = Unwrap<TLSCallbacks>(args.This());
 
@@ -608,7 +713,8 @@ void TLSCallbacks::EnableSessionCallbacks(
 
 
 void TLSCallbacks::EnableHelloParser(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   TLSCallbacks* wrap = Unwrap<TLSCallbacks>(args.This());
 
@@ -626,14 +732,15 @@ void TLSCallbacks::OnClientHelloParseEnd(void* arg) {
 
 #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
 void TLSCallbacks::GetServername(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   TLSCallbacks* wrap = Unwrap<TLSCallbacks>(args.This());
 
   const char* servername = SSL_get_servername(wrap->ssl_,
                                               TLSEXT_NAMETYPE_host_name);
   if (servername != NULL) {
-    args.GetReturnValue().Set(OneByteString(node_isolate, servername));
+    args.GetReturnValue().Set(OneByteString(env->isolate(), servername));
   } else {
     args.GetReturnValue().Set(false);
   }
@@ -641,15 +748,16 @@ void TLSCallbacks::GetServername(const FunctionCallbackInfo<Value>& args) {
 
 
 void TLSCallbacks::SetServername(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope scope(env->isolate());
 
   TLSCallbacks* wrap = Unwrap<TLSCallbacks>(args.This());
 
   if (args.Length() < 1 || !args[0]->IsString())
-    return ThrowTypeError("First argument should be a string");
+    return env->ThrowTypeError("First argument should be a string");
 
   if (wrap->started_)
-    return ThrowError("Already started.");
+    return env->ThrowError("Already started.");
 
   if (!wrap->is_client())
     return;
@@ -662,30 +770,38 @@ void TLSCallbacks::SetServername(const FunctionCallbackInfo<Value>& args) {
 
 
 int TLSCallbacks::SelectSNIContextCallback(SSL* s, int* ad, void* arg) {
-  HandleScope scope(node_isolate);
-
   TLSCallbacks* p = static_cast<TLSCallbacks*>(arg);
   Environment* env = p->env();
 
   const char* servername = SSL_get_servername(s, TLSEXT_NAMETYPE_host_name);
 
-  if (servername != NULL) {
-    // Call the SNI callback and use its return value as context
-    Local<Object> object = p->object();
-    Local<Value> ctx = object->Get(env->sni_context_string());
+  if (servername == NULL)
+    return SSL_TLSEXT_ERR_OK;
 
-    if (!ctx->IsObject())
-      return SSL_TLSEXT_ERR_NOACK;
+  HandleScope scope(env->isolate());
+  // Call the SNI callback and use its return value as context
+  Local<Object> object = p->object();
+  Local<Value> ctx = object->Get(env->sni_context_string());
 
-    p->sni_context_.Dispose();
-    p->sni_context_.Reset(node_isolate, ctx);
+  // Not an object, probably undefined or null
+  if (!ctx->IsObject())
+    return SSL_TLSEXT_ERR_NOACK;
 
-    SecureContext* sc = Unwrap<SecureContext>(ctx.As<Object>());
-    InitNPN(sc, p);
-    InitALPN(sc, p);
-    SSL_set_SSL_CTX(s, sc->ctx_);
+  Local<FunctionTemplate> cons = env->secure_context_constructor_template();
+  if (!cons->HasInstance(ctx)) {
+    // Failure: incorrect SNI context object
+    Local<Value> err = Exception::TypeError(env->sni_context_err_string());
+    p->MakeCallback(env->onerror_string(), 1, &err);
+    return SSL_TLSEXT_ERR_NOACK;
   }
 
+  p->sni_context_.Dispose();
+  p->sni_context_.Reset(env->isolate(), ctx);
+
+  SecureContext* sc = Unwrap<SecureContext>(ctx.As<Object>());
+  InitNPN(sc, p);
+  InitALPN(sc, p);
+  SSL_set_SSL_CTX(s, sc->ctx_);
   return SSL_TLSEXT_ERR_OK;
 }
 #endif  // SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
@@ -700,8 +816,9 @@ void TLSCallbacks::Initialize(Handle<Object> target,
 
   Local<FunctionTemplate> t = FunctionTemplate::New();
   t->InstanceTemplate()->SetInternalFieldCount(1);
-  t->SetClassName(FIXED_ONE_BYTE_STRING(node_isolate, "TLSWrap"));
+  t->SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "TLSWrap"));
 
+  NODE_SET_PROTOTYPE_METHOD(t, "receive", Receive);
   NODE_SET_PROTOTYPE_METHOD(t, "start", Start);
   NODE_SET_PROTOTYPE_METHOD(t, "setVerifyMode", SetVerifyMode);
   NODE_SET_PROTOTYPE_METHOD(t,
@@ -711,7 +828,7 @@ void TLSCallbacks::Initialize(Handle<Object> target,
                             "enableHelloParser",
                             EnableHelloParser);
 
-  SSLWrap<TLSCallbacks>::AddMethods(t);
+  SSLWrap<TLSCallbacks>::AddMethods(env, t);
 
 #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
   NODE_SET_PROTOTYPE_METHOD(t, "getServername", GetServername);
@@ -723,4 +840,4 @@ void TLSCallbacks::Initialize(Handle<Object> target,
 
 }  // namespace node
 
-NODE_MODULE_CONTEXT_AWARE(node_tls_wrap, node::TLSCallbacks::Initialize)
+NODE_MODULE_CONTEXT_AWARE_BUILTIN(tls_wrap, node::TLSCallbacks::Initialize)

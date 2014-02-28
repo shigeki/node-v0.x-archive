@@ -76,6 +76,31 @@ handshake extensions allowing you:
     certificates.
 
 
+## Perfect Forward Secrecy
+
+<!-- type=misc -->
+
+The term "[Forward Secrecy]" or "Perfect Forward Secrecy" describes a feature of
+key-agreement (i.e. key-exchange) methods. Practically it means that even if the
+private key of a (your) server is compromised, communication can only be
+decrypted by eavesdroppers if they manage to obtain the key-pair specifically
+generated for each session.
+
+This is achieved by randomly generating a key pair for key-agreement on every
+handshake (in contrary to the same key for all sessions). Methods implementing
+this technique, thus offering Perfect Forward Secrecy, are called "ephemeral".
+
+Currently two methods are commonly used to achieve Perfect Forward Secrecy (note 
+the character "E" appended to the traditional abbreviations):
+
+  * [DHE] - An ephemeral version of the Diffie Hellman key-agreement protocol.
+  * [ECDHE] - An ephemeral version of the Elliptic Curve Diffie Hellman
+    key-agreement protocol.
+
+Ephemeral methods may have some performance drawbacks, because key generation
+is expensive.
+
+
 ## tls.getCiphers()
 
 Returns an array with the names of the supported SSL ciphers.
@@ -121,22 +146,22 @@ automatically set as a listener for the [secureConnection][] event.  The
     Consult the [OpenSSL cipher list format documentation] for details on the
     format.
 
+    `ECDHE-RSA-AES128-SHA256` and `AES128-GCM-SHA256` are TLS v1.2 ciphers and
+    used when node.js is linked against OpenSSL 1.0.1 or newer, such as the
+    bundled version of OpenSSL.  Note that it is still possible for a TLS v1.2
+    client to negotiate a weaker cipher unless `honorCipherOrder` is enabled.
 
-    `AES128-GCM-SHA256` is used when node.js is linked against OpenSSL 1.0.1
-    or newer and the client speaks TLS 1.2, RC4 is used as a secure fallback.
+    `RC4` is used as a fallback for clients that speak on older version of
+    the TLS protocol.  `RC4` has in recent years come under suspicion and
+    should be considered compromised for anything that is truly sensitive.
+    It is speculated that state-level actors posess the ability to break it.
 
     **NOTE**: Previous revisions of this section suggested `AES256-SHA` as an
     acceptable cipher. Unfortunately, `AES256-SHA` is a CBC cipher and therefore
-    susceptible to BEAST attacks. Do *not* use it.
+    susceptible to [BEAST attacks]. Do *not* use it.
 
-  - `ecdhCurve`: A string describing a named curve to use for ECDH ciphers or
-    false to disable all ECDH ciphers.
-
-    This is required to support ECDH (Elliptic Curve Diffie-Hellman) ciphers.
-    ECDH ciphers are a newer alternative to RSA. The advantages of ECDH over
-    RSA is that it offers [Forward secrecy]. Forward secrecy means that for an
-    attacker it won't be possible to decrypt your previous data exchanges if
-    they get access to your private key.
+  - `ecdhCurve`: A string describing a named curve to use for ECDH key agreement
+    or false to disable ECDH.
 
     Defaults to `prime256v1`. Consult [RFC 4492] for more details.
 
@@ -149,12 +174,13 @@ automatically set as a listener for the [secureConnection][] event.  The
   - `honorCipherOrder` : When choosing a cipher, use the server's preferences
     instead of the client preferences.
 
-    Note that if SSLv2 is used, the server will send its list of preferences
-    to the client, and the client chooses the cipher.
-
     Although, this option is disabled by default, it is *recommended* that you
     use this option in conjunction with the `ciphers` option to mitigate
     BEAST attacks.
+
+    Note: If SSLv2 is used, the server will send its list of preferences to the
+    client, and the client chooses the cipher.  Support for SSLv2 is disabled
+    unless node.js was configured with `./configure --with-sslv2`.
 
   - `requestCert`: If `true` the server will request a certificate from
     clients that connect and attempt to verify that certificate. Default:
@@ -178,6 +204,12 @@ automatically set as a listener for the [secureConnection][] event.  The
   - `sessionTimeout`: An integer specifying the seconds after which TLS
     session identifiers and TLS session tickets created by the server are
     timed out. See [SSL_CTX_set_timeout] for more details.
+
+  - `ticketKeys`: A 48-byte `Buffer` instance consisting of 16-byte prefix,
+    16-byte hmac key, 16-byte AES key. You could use it to accept tls session
+    tickets on multiple instances of tls server.
+
+    NOTE: Automatically shared between `cluster` module workers.
 
   - `sessionIdContext`: A string containing a opaque identifier for session
     resumption. If `requestCert` is `true`, the default is MD5 hash value
@@ -275,7 +307,7 @@ Creates a new client connection to the given `port` and `host` (old API) or
 
   - `rejectUnauthorized`: If `true`, the server certificate is verified against
     the list of supplied CAs. An `'error'` event is emitted if verification
-    fails. Default: `true`.
+    fails; `err.code` contains the OpenSSL error code. Default: `true`.
 
   - `NPNProtocols`: An array of strings or `Buffer`s containing supported NPN
     protocols. `Buffer`s should have following format: `0x05hello0x05world`,
@@ -287,6 +319,8 @@ Creates a new client connection to the given `port` and `host` (old API) or
   - `secureProtocol`: The SSL method to use, e.g. `SSLv3_method` to force
     SSL version 3. The possible values depend on your installation of
     OpenSSL and are defined in the constant [SSL_METHODS][].
+
+  - `session`: A `Buffer` instance, containing TLS session.
 
 The `callback` parameter will be added as a listener for the
 ['secureConnect'][] event.
@@ -372,6 +406,8 @@ Construct a new TLSSocket object from existing TCP socket.
 
   - `SNICallback`: Optional, see [tls.createServer][]
 
+  - `session`: Optional, a `Buffer` instance, containing TLS session
+
 ## tls.createSecurePair([credentials], [isServer], [requestCert], [rejectUnauthorized])
 
     Stability: 0 - Deprecated. Use tls.TLSSocket instead.
@@ -448,10 +484,11 @@ established - it will be forwarded here.
 
 ### Event: 'newSession'
 
-`function (sessionId, sessionData) { }`
+`function (sessionId, sessionData, callback) { }`
 
 Emitted on creation of TLS session. May be used to store sessions in external
-storage.
+storage. `callback` must be invoked eventually, otherwise no data will be
+sent or received from secure connection.
 
 NOTE: adding this event listener will have an effect only on connections
 established after addition of event listener.
@@ -608,6 +645,30 @@ has been established.
 ANOTHER NOTE: When running as the server, socket will be destroyed
 with an error after `handshakeTimeout` timeout.
 
+### tlsSocket.setMaxSendFragment(size)
+
+Set maximum TLS fragment size (default and maximum value is: `16384`, minimum
+is: `512`). Returns `true` on success, `false` otherwise.
+
+Smaller fragment size decreases buffering latency on the client: large
+fragments are buffered by the TLS layer until the entire fragment is received
+and its integrity is verified; large fragments can span multiple roundtrips,
+and their processing can be delayed due to packet loss or reordering. However,
+smaller fragments add extra TLS framing bytes and CPU overhead, which may
+decrease overall server throughput.
+
+### tlsSocket.getSession()
+
+Return ASN.1 encoded TLS session or `undefined` if none was negotiated. Could
+be used to speed up handshake establishment when reconnecting to the server.
+
+### tlsSocket.getTLSTicket()
+
+NOTE: Works only with client TLS sockets. Useful only for debugging, for
+session reuse provide `session` option to `tls.connect`.
+
+Return TLS session ticket or `undefined` if none was negotiated.
+
 ### tlsSocket.address()
 
 Returns the bound address, the address family name and port of the
@@ -648,3 +709,5 @@ The numeric representation of the local port.
 [SSL_CTX_set_timeout]: http://www.openssl.org/docs/ssl/SSL_CTX_set_timeout.html
 [RFC 4492]: http://www.rfc-editor.org/rfc/rfc4492.txt
 [Forward secrecy]: http://en.wikipedia.org/wiki/Perfect_forward_secrecy
+[DHE]: https://en.wikipedia.org/wiki/Diffie%E2%80%93Hellman_key_exchange
+[ECDHE]: https://en.wikipedia.org/wiki/Elliptic_curve_Diffie%E2%80%93Hellman

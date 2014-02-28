@@ -100,36 +100,51 @@ test/gc/node_modules/weak/build/Release/weakref.node:
 		--directory="$(shell pwd)/test/gc/node_modules/weak" \
 		--nodedir="$(shell pwd)"
 
+build-addons:
+	@if [ ! -f node ]; then make all; fi
+	rm -rf test/addons/doc-*/
+	./node tools/doc/addon-verify.js
+	$(foreach dir, \
+			$(sort $(dir $(wildcard test/addons/*/*.gyp))), \
+			./node deps/npm/node_modules/node-gyp/bin/node-gyp rebuild \
+					--directory="$(shell pwd)/$(dir)" \
+					--nodedir="$(shell pwd)" && ) echo "build done"
+
 test-gc: all test/gc/node_modules/weak/build/Release/weakref.node
 	$(PYTHON) tools/test.py --mode=release gc
 
-test-all: all test/gc/node_modules/weak/build/Release/weakref.node
+test-build: all build-addons
+
+test-all: test-build test/gc/node_modules/weak/build/Release/weakref.node
 	$(PYTHON) tools/test.py --mode=debug,release
 	make test-npm
 
-test-all-http1: all
+test-all-http1: test-build
 	$(PYTHON) tools/test.py --mode=debug,release --use-http1
 
-test-all-valgrind: all
+test-all-valgrind: test-build
 	$(PYTHON) tools/test.py --mode=debug,release --valgrind
 
-test-release: all
+test-release: test-build
 	$(PYTHON) tools/test.py --mode=release
 
-test-debug: all
+test-debug: test-build
 	$(PYTHON) tools/test.py --mode=debug
 
-test-message: all
+test-message: test-build
 	$(PYTHON) tools/test.py message
 
 test-simple: all
 	$(PYTHON) tools/test.py simple
 
-test-pummel: all
+test-pummel: all wrk
 	$(PYTHON) tools/test.py pummel
 
 test-internet: all
 	$(PYTHON) tools/test.py internet
+
+test-debugger: all
+	$(PYTHON) tools/test.py debugger
 
 test-npm: node
 	./node deps/npm/test/run.js
@@ -137,40 +152,22 @@ test-npm: node
 test-npm-publish: node
 	npm_package_config_publishtest=true ./node deps/npm/test/run.js
 
+test-addons: test-build
+	$(PYTHON) tools/test.py --mode=release addons
+
 apidoc_sources = $(wildcard doc/api/*.markdown)
 apidocs = $(addprefix out/,$(apidoc_sources:.markdown=.html)) \
           $(addprefix out/,$(apidoc_sources:.markdown=.json))
 
-apidoc_dirs = out/doc out/doc/api/ out/doc/api/assets out/doc/about out/doc/community out/doc/download out/doc/logos out/doc/images
+apidoc_dirs = out/doc out/doc/api/ out/doc/api/assets
 
 apiassets = $(subst api_assets,api/assets,$(addprefix out/,$(wildcard doc/api_assets/*)))
 
-doc_images = $(addprefix out/,$(wildcard doc/images/* doc/*.jpg doc/*.png))
-
 website_files = \
-	out/doc/index.html    \
-	out/doc/v0.4_announcement.html   \
-	out/doc/cla.html      \
 	out/doc/sh_main.js    \
-	out/doc/sh_javascript.min.js \
-	out/doc/sh_vim-dark.css \
-	out/doc/sh.css \
-	out/doc/favicon.ico   \
-	out/doc/pipe.css \
-	out/doc/about/index.html \
-	out/doc/community/index.html \
-	out/doc/download/index.html \
-	out/doc/logos/index.html \
-	out/doc/changelog.html \
-	$(doc_images)
+	out/doc/sh_javascript.min.js
 
-doc: $(apidoc_dirs) $(website_files) $(apiassets) $(apidocs) tools/doc/ blog node
-
-blogclean:
-	rm -rf out/blog
-
-blog: doc/blog out/Release/node tools/blog
-	out/Release/node tools/blog/generate.js doc/blog/ out/blog/ doc/blog.html doc/rss.xml
+doc: $(apidoc_dirs) $(website_files) $(apiassets) $(apidocs) tools/doc/ node
 
 $(apidoc_dirs):
 	mkdir -p $@
@@ -180,9 +177,6 @@ out/doc/api/assets/%: doc/api_assets/% out/doc/api/assets/
 
 out/doc/changelog.html: ChangeLog doc/changelog-head.html doc/changelog-foot.html tools/build-changelog.sh node
 	bash tools/build-changelog.sh
-
-out/doc/%.html: doc/%.html node
-	cat $< | sed -e 's|__VERSION__|'$(VERSION)'|g' > $@
 
 out/doc/%: doc/%
 	cp -r $< $@
@@ -199,9 +193,6 @@ email.md: ChangeLog tools/email-footer.md
 
 blog.html: email.md
 	cat $< | ./node tools/doc/node_modules/.bin/marked > $@
-
-blog-upload: blog
-	rsync -r out/blog/ node@nodejs.org:~/web/nodejs.org/blog/
 
 website-upload: doc
 	rsync -r out/doc/ node@nodejs.org:~/web/nodejs.org/
@@ -415,4 +406,4 @@ cpplint:
 
 lint: jslint cpplint
 
-.PHONY: lint cpplint jslint bench clean docopen docclean doc dist distclean check uninstall install install-includes install-bin all staticlib dynamiclib test test-all website-upload pkg blog blogclean tar binary release-only bench-http-simple bench-idle bench-all bench bench-misc bench-array bench-buffer bench-net bench-http bench-fs bench-tls
+.PHONY: lint cpplint jslint bench clean docopen docclean doc dist distclean check uninstall install install-includes install-bin all staticlib dynamiclib test test-all test-addons build-addons website-upload pkg blog blogclean tar binary release-only bench-http-simple bench-idle bench-all bench bench-misc bench-array bench-buffer bench-net bench-http bench-fs bench-tls

@@ -411,7 +411,9 @@ index corresponds to a fd in the child.  The value is one of the following:
 4. `Stream` object - Share a readable or writable stream that refers to a tty,
    file, socket, or a pipe with the child process. The stream's underlying
    file descriptor is duplicated in the child process to the fd that 
-   corresponds to the index in the `stdio` array.
+   corresponds to the index in the `stdio` array. Note that the stream must
+   have an underlying descriptor (file streams do not until the `'open'`
+   event has occurred).
 5. Positive integer - The integer value is interpreted as a file descriptor 
    that is is currently open in the parent process. It is shared with the child
    process, similar to how `Stream` objects can be shared.
@@ -512,8 +514,8 @@ Runs a command in a shell and buffers the output.
     });
 
 The callback gets the arguments `(error, stdout, stderr)`. On success, `error`
-will be `null`.  On error, `error` will be an instance of `Error` and `err.code`
-will be the exit code of the child process, and `err.signal` will be set to the
+will be `null`.  On error, `error` will be an instance of `Error` and `error.code`
+will be the exit code of the child process, and `error.signal` will be set to the
 signal that terminated the process.
 
 There is a second optional argument to specify several options. The
@@ -533,7 +535,7 @@ amount of data allowed on stdout or stderr - if this value is exceeded then
 the child process is killed.
 
 
-## child_process.execFile(file, args, options, callback)
+## child_process.execFile(file, [args], [options], [callback])
 
 * `file` {String} The filename of the program to run
 * `args` {Array} List of string arguments
@@ -566,8 +568,10 @@ leaner than `child_process.exec`. It has the same options.
   * `execPath` {String} Executable used to create the child process
   * `execArgv` {Array} List of string arguments passed to the executable
     (Default: `process.execArgv`)
-  * `silent` {Boolean} If true, prevent stdout and stderr in the spawned node
-    process from being associated with the parent's (default is false)
+  * `silent` {Boolean} If true, stdin, stdout, and stderr of the child will be
+    piped to the parent, otherwise they will be inherited from the parent, see
+    the "pipe" and "inherit" options for `spawn()`'s `stdio` for more details
+    (default is false)
 * Return: ChildProcess object
 
 This is a special case of the `spawn()` functionality for spawning Node
@@ -584,5 +588,96 @@ created for the child rather than the current `node` executable. This should be
 done with care and by default will talk over the fd represented an
 environmental variable `NODE_CHANNEL_FD` on the child process. The input and
 output on this fd is expected to be line delimited JSON objects.
+
+## child_process.spawnSync(command, [args], [options])
+
+* `command` {String} The command to run
+* `args` {Array} List of string arguments
+* `options` {Object}
+  * `cwd` {String} Current working directory of the child process
+  * `input` {String|Buffer} The value which will be passed as stdin to the spawned process
+    - supplying this value will override `stdio[0]`
+  * `stdio` {Array} Child's stdio configuration.
+  * `env` {Object} Environment key-value pairs
+  * `uid` {Number} Sets the user identity of the process. (See setuid(2).)
+  * `gid` {Number} Sets the group identity of the process. (See setgid(2).)
+  * `timeout` {Number} In milliseconds the maximum amount of time the process is allowed to run. (Default: undefined)
+  * `killSignal` {String} The signal value to be used when the spawned process will be killed. (Default: 'SIGTERM')
+  * `maxBuffer` {Number}
+  * `encoding` {String} The encoding used for all stdio inputs and outputs. (Default: 'buffer')
+* return: {Object}
+  * `pid` {Number} Pid of the child process
+  * `output` {Array} Array of results from stdio output
+  * `stdout` {Buffer|String} The contents of `output[1]`
+  * `stderr` {Buffer|String} The contents of `output[2]`
+  * `status` {Number} The exit code of the child process
+  * `signal` {String} The signal used to kill the child process
+  * `error` {Error} The error object if the child process failed or timedout
+
+`spawnSync` will not return until the child process has fully closed. When a
+timeout has been encountered and `killSignal` is sent, the method won't return
+until the process has completely exited. That is to say, if the process handles
+the `SIGTERM` signal and doesn't exit, your process will wait until the child
+process has exited.
+
+## child_process.execFileSync(command, [args], [options])
+
+* `command` {String} The command to run
+* `args` {Array} List of string arguments
+* `options` {Object}
+  * `cwd` {String} Current working directory of the child process
+  * `input` {String|Buffer} The value which will be passed as stdin to the spawned process
+    - supplying this value will override `stdio[0]`
+  * `stdio` {Array} Child's stdio configuration. (Default: 'pipe')
+    - `stderr` by default will be output to the parent process' stderr unless
+      `stdio` is specified
+  * `env` {Object} Environment key-value pairs
+  * `uid` {Number} Sets the user identity of the process. (See setuid(2).)
+  * `gid` {Number} Sets the group identity of the process. (See setgid(2).)
+  * `timeout` {Number} In milliseconds the maximum amount of time the process is allowed to run. (Default: undefined)
+  * `killSignal` {String} The signal value to be used when the spawned process will be killed. (Default: 'SIGTERM')
+  * `maxBuffer` {Number}
+  * `encoding` {String} The encoding used for all stdio inputs and outputs. (Default: 'buffer')
+* return: {Buffer|String} The stdout from the command
+
+`execFileSync` will not return until the child process has fully closed. When a
+timeout has been encountered and `killSignal` is sent, the method won't return
+until the process has completely exited. That is to say, if the process handles
+the `SIGTERM` signal and doesn't exit, your process will wait until the child
+process has exited.
+
+If the process times out, or has a non-zero exit code, this method ***will***
+throw.  The `Error` object will contain the entire result from
+[`child_process.spawnSync`](#child_process_child_process_spawnsync_command_args_options)
+
+
+## child_process.execSync(command, [options])
+
+* `command` {String} The command to run
+* `options` {Object}
+  * `cwd` {String} Current working directory of the child process
+  * `input` {String|Buffer} The value which will be passed as stdin to the spawned process
+    - supplying this value will override `stdio[0]`
+  * `stdio` {Array} Child's stdio configuration. (Default: 'pipe')
+    - `stderr` by default will be output to the parent process' stderr unless
+      `stdio` is specified
+  * `env` {Object} Environment key-value pairs
+  * `uid` {Number} Sets the user identity of the process. (See setuid(2).)
+  * `gid` {Number} Sets the group identity of the process. (See setgid(2).)
+  * `timeout` {Number} In milliseconds the maximum amount of time the process is allowed to run. (Default: undefined)
+  * `killSignal` {String} The signal value to be used when the spawned process will be killed. (Default: 'SIGTERM')
+  * `maxBuffer` {Number}
+  * `encoding` {String} The encoding used for all stdio inputs and outputs. (Default: 'buffer')
+* return: {Buffer|String} The stdout from the command
+
+`execSync` will not return until the child process has fully closed. When a
+timeout has been encountered and `killSignal` is sent, the method won't return
+until the process has completely exited. That is to say, if the process handles
+the `SIGTERM` signal and doesn't exit, your process will wait until the child
+process has exited.
+
+If the process times out, or has a non-zero exit code, this method ***will***
+throw.  The `Error` object will contain the entire result from
+[`child_process.spawnSync`](#child_process_child_process_spawnsync_command_args_options)
 
 [EventEmitter]: events.html#events_class_events_eventemitter

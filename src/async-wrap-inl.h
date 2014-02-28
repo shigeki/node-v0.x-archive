@@ -35,10 +35,13 @@
 
 namespace node {
 
-inline AsyncWrap::AsyncWrap(Environment* env, v8::Handle<v8::Object> object)
+inline AsyncWrap::AsyncWrap(Environment* env,
+                            v8::Handle<v8::Object> object,
+                            ProviderType provider)
     : BaseObject(env, object),
-      async_flags_(NO_OPTIONS) {
-  if (!env->has_async_listeners())
+      async_flags_(NO_OPTIONS),
+      provider_type_(provider) {
+  if (!env->has_async_listener())
     return;
 
   // TODO(trevnorris): Do we really need to TryCatch this call?
@@ -49,42 +52,109 @@ inline AsyncWrap::AsyncWrap(Environment* env, v8::Handle<v8::Object> object)
   env->async_listener_run_function()->Call(env->process_object(), 1, &val);
 
   if (!try_catch.HasCaught())
-    async_flags_ |= ASYNC_LISTENERS;
+    async_flags_ |= HAS_ASYNC_LISTENER;
 }
 
 
 inline AsyncWrap::~AsyncWrap() {
 }
 
-
-template <typename Type>
-inline void AsyncWrap::AddMethods(v8::Handle<v8::FunctionTemplate> t) {
-  NODE_SET_PROTOTYPE_METHOD(t,
-                            "addAsyncListener",
-                            AddAsyncListener<Type>);
-  NODE_SET_PROTOTYPE_METHOD(t,
-                            "removeAsyncListener",
-                            RemoveAsyncListener<Type>);
+inline uint32_t AsyncWrap::provider_type() const {
+  return provider_type_;
 }
 
 
-inline uint32_t AsyncWrap::async_flags() const {
-  return async_flags_;
+inline bool AsyncWrap::has_async_listener() {
+  return async_flags_ & HAS_ASYNC_LISTENER;
 }
 
 
-inline void AsyncWrap::set_flag(unsigned int flag) {
-  async_flags_ |= flag;
-}
+// I hate you domains.
+inline v8::Handle<v8::Value> AsyncWrap::MakeDomainCallback(
+    const v8::Handle<v8::Function> cb,
+    int argc,
+    v8::Handle<v8::Value>* argv) {
+  assert(env()->context() == env()->isolate()->GetCurrentContext());
 
+  v8::Local<v8::Object> context = object();
+  v8::Local<v8::Object> process = env()->process_object();
+  v8::Local<v8::Value> domain_v = context->Get(env()->domain_string());
+  v8::Local<v8::Object> domain;
 
-inline void AsyncWrap::remove_flag(unsigned int flag) {
-  async_flags_ &= ~flag;
-}
+  v8::TryCatch try_catch;
+  try_catch.SetVerbose(true);
 
+  if (has_async_listener()) {
+    v8::Local<v8::Value> val = context.As<v8::Value>();
+    env()->async_listener_load_function()->Call(process, 1, &val);
 
-inline bool AsyncWrap::has_async_queue() {
-  return async_flags() & ASYNC_LISTENERS;
+    if (try_catch.HasCaught())
+      return v8::Undefined(env()->isolate());
+  }
+
+  bool has_domain = domain_v->IsObject();
+  if (has_domain) {
+    domain = domain_v.As<v8::Object>();
+
+    if (domain->Get(env()->disposed_string())->IsTrue())
+      return Undefined(env()->isolate());
+
+    v8::Local<v8::Function> enter =
+      domain->Get(env()->enter_string()).As<v8::Function>();
+    assert(enter->IsFunction());
+    enter->Call(domain, 0, NULL);
+
+    if (try_catch.HasCaught())
+      return Undefined(env()->isolate());
+  }
+
+  v8::Local<v8::Value> ret = cb->Call(context, argc, argv);
+
+  if (try_catch.HasCaught()) {
+    return Undefined(env()->isolate());
+  }
+
+  if (has_domain) {
+    v8::Local<v8::Function> exit =
+      domain->Get(env()->exit_string()).As<v8::Function>();
+    assert(exit->IsFunction());
+    exit->Call(domain, 0, NULL);
+
+    if (try_catch.HasCaught())
+      return Undefined(env()->isolate());
+  }
+
+  if (has_async_listener()) {
+    v8::Local<v8::Value> val = context.As<v8::Value>();
+    env()->async_listener_unload_function()->Call(process, 1, &val);
+
+    if (try_catch.HasCaught())
+      return Undefined(env()->isolate());
+  }
+
+  Environment::TickInfo* tick_info = env()->tick_info();
+
+  if (tick_info->in_tick()) {
+    return ret;
+  }
+
+  if (tick_info->length() == 0) {
+    tick_info->set_index(0);
+    return ret;
+  }
+
+  tick_info->set_in_tick(true);
+
+  env()->tick_callback_function()->Call(process, 0, NULL);
+
+  tick_info->set_in_tick(false);
+
+  if (try_catch.HasCaught()) {
+    tick_info->set_last_threw(true);
+    return Undefined(env()->isolate());
+  }
+
+  return ret;
 }
 
 
@@ -92,6 +162,9 @@ inline v8::Handle<v8::Value> AsyncWrap::MakeCallback(
     const v8::Handle<v8::Function> cb,
     int argc,
     v8::Handle<v8::Value>* argv) {
+  if (env()->using_domains())
+    return MakeDomainCallback(cb, argc, argv);
+
   assert(env()->context() == env()->isolate()->GetCurrentContext());
 
   v8::Local<v8::Object> context = object();
@@ -100,7 +173,7 @@ inline v8::Handle<v8::Value> AsyncWrap::MakeCallback(
   v8::TryCatch try_catch;
   try_catch.SetVerbose(true);
 
-  if (has_async_queue()) {
+  if (has_async_listener()) {
     v8::Local<v8::Value> val = context.As<v8::Value>();
     env()->async_listener_load_function()->Call(process, 1, &val);
 
@@ -114,7 +187,7 @@ inline v8::Handle<v8::Value> AsyncWrap::MakeCallback(
     return Undefined(env()->isolate());
   }
 
-  if (has_async_queue()) {
+  if (has_async_listener()) {
     v8::Local<v8::Value> val = context.As<v8::Value>();
     env()->async_listener_unload_function()->Call(process, 1, &val);
 
@@ -135,9 +208,6 @@ inline v8::Handle<v8::Value> AsyncWrap::MakeCallback(
 
   tick_info->set_in_tick(true);
 
-  // TODO(trevnorris): Consider passing "context" to _tickCallback so it
-  // can then be passed as the first argument to the nextTick callback.
-  // That should greatly help needing to create closures.
   env()->tick_callback_function()->Call(process, 0, NULL);
 
   tick_info->set_in_tick(false);
@@ -172,49 +242,6 @@ inline v8::Handle<v8::Value> AsyncWrap::MakeCallback(
   assert(cb->IsFunction());
 
   return MakeCallback(cb, argc, argv);
-}
-
-
-template <typename Type>
-inline void AsyncWrap::AddAsyncListener(
-    const v8::FunctionCallbackInfo<v8::Value>& args) {
-  v8::HandleScope handle_scope(args.GetIsolate());
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-
-  v8::Local<v8::Object> handle = args.This();
-  v8::Local<v8::Value> listener = args[0];
-  assert(listener->IsObject());
-  assert(handle->InternalFieldCount() > 0);
-
-  env->async_listener_push_function()->Call(handle, 1, &listener);
-
-  Type* wrap = static_cast<Type*>(
-      handle->GetAlignedPointerFromInternalField(0));
-  assert(wrap != NULL);
-  wrap->set_flag(ASYNC_LISTENERS);
-}
-
-
-template <typename Type>
-inline void AsyncWrap::RemoveAsyncListener(
-    const v8::FunctionCallbackInfo<v8::Value>& args) {
-  v8::HandleScope handle_scope(args.GetIsolate());
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-
-  v8::Local<v8::Object> handle = args.This();
-  v8::Local<v8::Value> listener = args[0];
-  assert(listener->IsObject());
-  assert(handle->InternalFieldCount() > 0);
-
-  v8::Local<v8::Value> ret =
-      env->async_listener_strip_function()->Call(handle, 1, &listener);
-
-  if (ret->IsFalse()) {
-    Type* wrap = static_cast<Type*>(
-        handle->GetAlignedPointerFromInternalField(0));
-    assert(wrap != NULL);
-    wrap->remove_flag(ASYNC_LISTENERS);
-  }
 }
 
 }  // namespace node

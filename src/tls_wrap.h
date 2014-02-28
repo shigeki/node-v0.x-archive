@@ -50,6 +50,8 @@ class TLSCallbacks : public crypto::SSLWrap<TLSCallbacks>,
                          v8::Handle<v8::Value> unused,
                          v8::Handle<v8::Context> context);
 
+  const char* Error();
+  int TryWrite(uv_buf_t** bufs, size_t* count);
   int DoWrite(WriteWrap* w,
               uv_buf_t* bufs,
               size_t count,
@@ -64,6 +66,8 @@ class TLSCallbacks : public crypto::SSLWrap<TLSCallbacks>,
               const uv_buf_t* buf,
               uv_handle_type pending);
   int DoShutdown(ShutdownWrap* req_wrap, uv_shutdown_cb cb);
+
+  void NewSessionDoneCb();
 
  protected:
   static const int kClearOutChunkSize = 1024;
@@ -98,18 +102,29 @@ class TLSCallbacks : public crypto::SSLWrap<TLSCallbacks>,
   static void EncOutCb(uv_write_t* req, int status);
   bool ClearIn();
   void ClearOut();
-  void InvokeQueued(int status);
+  void MakePending();
+  bool InvokeQueued(int status);
 
   inline void Cycle() {
-    ClearIn();
-    ClearOut();
-    EncOut();
+    // Prevent recursion
+    if (++cycle_depth_ > 1)
+      return;
+
+    for (; cycle_depth_ > 0; cycle_depth_--) {
+      ClearIn();
+      ClearOut();
+      EncOut();
+    }
   }
 
-  v8::Local<v8::Value> GetSSLError(int status, int* err);
+  v8::Local<v8::Value> GetSSLError(int status, int* err, const char** msg);
+  const char* PrintErrors();
+
+  static int PrintErrorsCb(const char* str, size_t len, void* arg);
   static void OnClientHelloParseEnd(void* arg);
 
   static void Wrap(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void Receive(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Start(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void SetVerifyMode(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void EnableSessionCallbacks(
@@ -132,10 +147,12 @@ class TLSCallbacks : public crypto::SSLWrap<TLSCallbacks>,
   size_t write_size_;
   size_t write_queue_size_;
   QUEUE write_item_queue_;
-  WriteItem* pending_write_item_;
+  QUEUE pending_write_items_;
   bool started_;
   bool established_;
   bool shutdown_;
+  const char* error_;
+  int cycle_depth_;
 
   // If true - delivered EOF to the js-land, either after `close_notify`, or
   // after the `UV_EOF` on socket.
@@ -144,6 +161,9 @@ class TLSCallbacks : public crypto::SSLWrap<TLSCallbacks>,
 #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
   v8::Persistent<v8::Value> sni_context_;
 #endif  // SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
+
+  static size_t error_off_;
+  static char error_buf_[1024];
 };
 
 }  // namespace node

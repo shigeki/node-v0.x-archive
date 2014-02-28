@@ -25,8 +25,10 @@ var assert = require('assert');
 var http = require('http');
 
 http.createServer(function(req, res) {
-  write(res);
   req.resume();
+  req.on('end', function() {
+    write(res);
+  });
   this.close();
 }).listen(common.PORT, function() {
   var req = http.request({
@@ -67,7 +69,7 @@ function write(out) {
     endCb = true;
     console.error('%s endCb', name);
     process.nextTick(function() {
-      assert(endCb, name + ' got endCb event before finishEvent!');
+      assert(finishEvent, name + ' got endCb event before finishEvent!');
       console.log('ok - %s endCb', name);
     });
   });

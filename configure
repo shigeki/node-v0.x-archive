@@ -431,7 +431,7 @@ def configure_arm(o):
   elif is_arm_hard_float_abi():
     arm_float_abi = 'hard'
   else:
-    'default'
+    arm_float_abi = 'default'
   o['variables']['armv7'] = int(is_arch_armv7())
   o['variables']['arm_fpu'] = 'vfpv3'  # V8 3.18 no longer supports VFP2.
   o['variables']['arm_neon'] = int(is_arm_neon())
@@ -560,6 +560,9 @@ def configure_libuv(o):
   # assume shared libuv if one of these is set?
   if options.shared_libuv_libpath:
     o['libraries'] += ['-L%s' % options.shared_libuv_libpath]
+  else:
+    o['variables']['uv_library'] = 'static_library'
+
   if options.shared_libuv_libname:
     o['libraries'] += ['-l%s' % options.shared_libuv_libname]
   elif options.shared_libuv:
