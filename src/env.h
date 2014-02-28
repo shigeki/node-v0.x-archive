@@ -131,6 +131,8 @@ namespace node {
   V(modulus_string, "modulus")                                                \
   V(mtime_string, "mtime")                                                    \
   V(name_string, "name")                                                      \
+  V(kxname_string, "kxname")                                                      \
+  V(kxbits_string, "kxbits")                                                      \
   V(need_imm_cb_string, "_needImmediateCallback")                             \
   V(netmask_string, "netmask")                                                \
   V(nice_string, "nice")                                                      \

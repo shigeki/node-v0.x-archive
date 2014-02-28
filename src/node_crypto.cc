@@ -909,7 +909,7 @@ void SSLWrap<Base>::AddMethods(Environment* env, Handle<FunctionTemplate> t) {
   NODE_SET_PROTOTYPE_METHOD(t, "isInitFinished", IsInitFinished);
   NODE_SET_PROTOTYPE_METHOD(t, "verifyError", VerifyError);
   NODE_SET_PROTOTYPE_METHOD(t, "getCurrentCipher", GetCurrentCipher);
-  NODE_SET_PROTOTYPE_METHOD(t, "getKeyExchangeInfo", GetKeyExchangeInfo);
+  NODE_SET_PROTOTYPE_METHOD(t, "getServerKeyExchangeInfo", GetServerKeyExchangeInfo);
   NODE_SET_PROTOTYPE_METHOD(t, "endParser", EndParser);
   NODE_SET_PROTOTYPE_METHOD(t, "renegotiate", Renegotiate);
   NODE_SET_PROTOTYPE_METHOD(t, "shutdown", Shutdown);
@@ -1466,25 +1466,44 @@ void SSLWrap<Base>::GetCurrentCipher(const FunctionCallbackInfo<Value>& args) {
 
 
 template <class Base>
-void SSLWrap<Base>::GetKeyExchangeInfo(const FunctionCallbackInfo<Value>& args) {
+void SSLWrap<Base>::GetServerKeyExchangeInfo(const FunctionCallbackInfo<Value>& args) {
   HandleScope scope(args.GetIsolate());
 
   Base* w = Unwrap<Base>(args.This());
-//  Environment* env = w->ssl_env();
+  Environment* env = w->ssl_env();
 
   Local<Object> info = Object::New();
+
+  char kx_name[10];
+  int kx_key = 0;
+
   EVP_PKEY *key;
-  SSL_get_server_tmp_key(w->ssl_, &key);
+  if (!SSL_get_server_tmp_key(w->ssl_, &key)) {
+    args.GetReturnValue().Set(Null(env->isolate()));
+    return;
+  }
+
   switch (EVP_PKEY_id(key)) {
     case EVP_PKEY_RSA:
-     fprintf(stderr, "RSA, %d bits\n", EVP_PKEY_bits(key));
+      strcpy(kx_name, "RSA");
+      kx_key = EVP_PKEY_bits(key);
     break;
     case EVP_PKEY_DH:
-     fprintf(stderr, "DH, %d bits\n", EVP_PKEY_bits(key));
+      strcpy(kx_name, "DH");
+      kx_key = EVP_PKEY_bits(key);
     break;
     case EVP_PKEY_EC:
-     fprintf(stderr, "ECDH, %d bits\n", EVP_PKEY_bits(key));
+      strcpy(kx_name, "ECDH");
+      kx_key = EVP_PKEY_bits(key);
     break;
+    default:
+      // unknown
+    break;
+  }
+
+  if (kx_key > 0) {
+    info->Set(env->kxname_string(), OneByteString(args.GetIsolate(), (const char*)kx_name));
+    info->Set(env->kxbits_string(), Integer::New(kx_key, env->isolate()));
   }
 
   EVP_PKEY_free(key);
@@ -1628,7 +1647,7 @@ int SSLWrap<Base>::SelectALPNCallback(SSL* s,
 				      void* arg) {
 
     Base* w = static_cast<Base*>(arg);
-
+    Environment* env = w->env();
     if (w->alpn_protos_.IsEmpty()) {
       // We should at least select one protocol
       // If server is using ALPN
@@ -1637,7 +1656,7 @@ int SSLWrap<Base>::SelectALPNCallback(SSL* s,
       return SSL_TLSEXT_ERR_OK;
     }
 
-    Local<Object> obj = PersistentToLocal(node_isolate, w->alpn_protos_);
+    Local<Object> obj = PersistentToLocal(env->isolate(), w->alpn_protos_);
     const unsigned char* alpn_protos =
       reinterpret_cast<const unsigned char*>(Buffer::Data(obj));
     size_t len = Buffer::Length(obj);
@@ -1661,7 +1680,7 @@ int SSLWrap<Base>::SelectALPNCallback(SSL* s,
 template <class Base>
 void SSLWrap<Base>::GetALPNNegotiatedProto(
 					   const FunctionCallbackInfo<v8::Value>& args) {
-  HandleScope scope(node_isolate);
+  HandleScope scope(args.GetIsolate());
   Base* w = Unwrap<Base>(args.This());
 
   const unsigned char* alpn_proto;
@@ -1673,13 +1692,13 @@ void SSLWrap<Base>::GetALPNNegotiatedProto(
       return args.GetReturnValue().Set(false);
 
     args.GetReturnValue().Set(
-			      OneByteString(node_isolate, alpn_proto, alpn_proto_len));
+			      OneByteString(args.GetIsolate(), alpn_proto, alpn_proto_len));
 }
 
 
 template <class Base>
 void SSLWrap<Base>::SetALPNProtocols(const FunctionCallbackInfo<v8::Value>& args) {
-  HandleScope scope(node_isolate);
+  HandleScope scope(args.GetIsolate());
 
   if (args.Length() < 1 || !Buffer::HasInstance(args[0]))
     return ThrowTypeError("Must give a Buffer as first argument");
@@ -1692,7 +1711,7 @@ void SSLWrap<Base>::SetALPNProtocols(const FunctionCallbackInfo<v8::Value>& args
     int r = SSL_set_alpn_protos(w->ssl_, alpn_protos, alpn_protos_len);
     assert(r == 0);
   } else {
-    w->alpn_protos_.Reset(node_isolate, args[0].As<Object>());
+    w->alpn_protos_.Reset(args.GetIsolate(), args[0].As<Object>());
   }
 }
 #endif // OPENSSL_NO_NEXTPROTONEG
