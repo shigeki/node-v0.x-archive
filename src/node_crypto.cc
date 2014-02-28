@@ -238,6 +238,7 @@ void SecureContext::Initialize(Environment* env, Handle<Object> target) {
   NODE_SET_PROTOTYPE_METHOD(t, "addRootCerts", SecureContext::AddRootCerts);
   NODE_SET_PROTOTYPE_METHOD(t, "setCiphers", SecureContext::SetCiphers);
   NODE_SET_PROTOTYPE_METHOD(t, "setECDHCurve", SecureContext::SetECDHCurve);
+  NODE_SET_PROTOTYPE_METHOD(t, "setDHParam", SecureContext::SetDHParam);
   NODE_SET_PROTOTYPE_METHOD(t, "setOptions", SecureContext::SetOptions);
   NODE_SET_PROTOTYPE_METHOD(t, "setSessionIdContext",
                                SecureContext::SetSessionIdContext);
@@ -663,6 +664,35 @@ void SecureContext::SetECDHCurve(const FunctionCallbackInfo<Value>& args) {
   SSL_CTX_set_tmp_ecdh(sc->ctx_, ecdh);
 
   EC_KEY_free(ecdh);
+}
+
+
+void SecureContext::SetDHParam(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(args.GetIsolate());
+
+  SecureContext* sc = Unwrap<SecureContext>(args.This());
+  Environment* env = sc->env();
+
+  if (args.Length() != 1) {
+    return env->ThrowTypeError("Bad parameter");
+  }
+
+  BIO *bio = LoadBIO(env, args[0]);
+  if (!bio)
+    return;
+
+  DH *dh = PEM_read_bio_DHparams(bio, NULL, NULL, NULL);
+
+  if(dh == NULL) {
+    goto exit;
+  }
+
+  SSL_CTX_set_options(sc->ctx_, SSL_OP_SINGLE_DH_USE);
+  SSL_CTX_set_tmp_dh(sc->ctx_, dh);
+
+ exit:
+  DH_free(dh);
+  BIO_free(bio);
 }
 
 
