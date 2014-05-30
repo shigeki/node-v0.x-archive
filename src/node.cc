@@ -2442,6 +2442,13 @@ static Handle<Object> GetFeatures(Environment* env) {
 #endif
   obj->Set(env->tls_npn_string(), tls_npn);
 
+#ifndef OPENSSL_NO_NEXTPROTONEG
+  Local<Boolean> tls_alpn = True(env->isolate());
+#else
+  Local<Boolean> tls_alpn = False(env->isolate());
+#endif
+  obj->Set(env->tls_alpn_string(), tls_alpn);
+
 #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
   Local<Boolean> tls_sni = True(env->isolate());
 #else

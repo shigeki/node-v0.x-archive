@@ -30,6 +30,10 @@
 #include "node_buffer.h"
 #endif
 
+#ifndef OPENSSL_NO_NEXTPROTONEG
+#include "node_buffer.h"
+#endif
+
 #include "env.h"
 #include "async-wrap.h"
 #include "async-wrap-inl.h"
@@ -176,6 +180,10 @@ class SSLWrap {
 #ifdef NODE__HAVE_TLSEXT_STATUS_CB
     ocsp_response_.Reset();
 #endif  // NODE__HAVE_TLSEXT_STATUS_CB
+#ifndef OPENSSL_NO_NEXTPROTONEG
+    alpn_protos_.Reset();
+    selected_alpn_proto_.Reset();
+#endif
   }
 
   inline SSL* ssl() const { return ssl_; }
@@ -186,6 +194,7 @@ class SSLWrap {
 
  protected:
   static void InitNPN(SecureContext* sc, Base* base);
+  static void InitALPN(SecureContext* sc, Base* base);
   static void AddMethods(Environment* env, v8::Handle<v8::FunctionTemplate> t);
 
   static SSL_SESSION* GetSessionCallback(SSL* s,
@@ -235,6 +244,18 @@ class SSLWrap {
 #endif  // OPENSSL_NPN_NEGOTIATED
   static int TLSExtStatusCallback(SSL* s, void* arg);
 
+#ifndef OPENSSL_NO_NEXTPROTONEG
+  static void GetALPNNegotiatedProto(
+      const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void SetALPNProtocols(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static int SelectALPNCallback(SSL* s,
+                                const unsigned char** out,
+                                unsigned char* outlen,
+                                const unsigned char* in,
+                                unsigned int inlen,
+                                void* arg);
+#endif  //OPENSSL_NO_NEXTPROTONEG
+
   inline Environment* ssl_env() const {
     return env_;
   }
@@ -255,6 +276,11 @@ class SSLWrap {
   v8::Persistent<v8::Object> npn_protos_;
   v8::Persistent<v8::Value> selected_npn_proto_;
 #endif  // OPENSSL_NPN_NEGOTIATED
+
+#ifndef OPENSSL_NO_NEXTPROTONEG
+      v8::Persistent<v8::Object> alpn_protos_;
+  v8::Persistent<v8::Value> selected_alpn_proto_;
+#endif // OPENSSL_NO_NEXTPROTONEG
 
   friend class SecureContext;
 };
