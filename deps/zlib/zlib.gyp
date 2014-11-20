@@ -27,7 +27,6 @@
             'crc32.h',
             'deflate.c',
             'deflate.h',
-            'gzio.c',
             'infback.c',
             'inffast.c',
             'inffast.h',
