@@ -10,13 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(USE_SYSTEM_ZLIB)
-#include <zlib.h>
-#else
 #include "zlib.h"
-#endif
-
 #include "ioapi.h"
+
+
 
 /* I've found an old Unix (a SunOS 4.1.3_U1) without all SEEK_* defined.... */
 

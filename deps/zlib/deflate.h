@@ -1,5 +1,5 @@
 /* deflate.h -- internal compression state
- * Copyright (C) 1995-2004 Jean-loup Gailly
+ * Copyright (C) 1995-2005 Jean-loup Gailly
  * For conditions of distribution and use, see copyright notice in zlib.h
  */
 
@@ -8,7 +8,7 @@
    subject to change. Applications should only use zlib.h.
  */
 
-/* @(#) $Id: deflate.h,v 3.6 2005/08/04 19:14:14 tor%cs.brown.edu Exp $ */
+/* @(#) $Id$ */
 
 #ifndef DEFLATE_H
 #define DEFLATE_H

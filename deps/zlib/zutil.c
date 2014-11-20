@@ -3,7 +3,7 @@
  * For conditions of distribution and use, see copyright notice in zlib.h
  */
 
-/* @(#) $Id: zutil.c,v 3.11 2005/08/04 19:14:14 tor%cs.brown.edu Exp $ */
+/* @(#) $Id$ */
 
 #include "zutil.h"
 
@@ -141,9 +141,7 @@ const char * ZEXPORT zError(err)
      * errno.  We define it as a global variable to simplify porting.
      * Its value is always 0 and should not be used.
      */
-    // Google Gears modification: zutil.h defines errno as z_errno for WinCE.
-    //int errno = 0;
-    int z_errno = 0;  
+    int errno = 0;
 #endif
 
 #ifndef HAVE_MEMCPY

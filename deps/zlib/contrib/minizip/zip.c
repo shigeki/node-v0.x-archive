@@ -14,11 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#if defined(USE_SYSTEM_ZLIB)
-#include <zlib.h>
-#else
 #include "zlib.h"
-#endif
 #include "zip.h"
 
 #ifdef STDC
