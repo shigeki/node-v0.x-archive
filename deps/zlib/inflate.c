@@ -1048,6 +1048,11 @@ int flush;
             copy = out - left;
             if (state->offset > copy) {         /* copy from window */
                 copy = state->offset - copy;
+                if (copy > state->whave) {
+                    strm->msg = (char *)"invalid distance too far back";
+                    state->mode = BAD;
+                    break;
+                }
                 if (copy > state->write) {
                     copy -= state->write;
                     from = state->window + (state->wsize - copy);
