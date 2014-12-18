@@ -158,7 +158,7 @@ while (<TXT>) {
     # now scan the trust part for untrusted certs
     while (<TXT>) {
       last if (/^#/);
-      if (/^CKA_TRUST_SERVER_AUTH\s+CK_TRUST\s+CKT_NSS_TRUSTED_DELEGATOR$/) {
+      if (/^CKA_TRUST_SERVER_AUTH\s+CK_TRUST\s+(CKT_NSS_TRUSTED_DELEGATOR|CKT_NSS_MUST_VERIFY_TRUST)$/) {
           $untrusted = 0;
       }
     }
@@ -197,5 +197,3 @@ close(CRT) or die "Couldn't close $crt: $!\n";
 print STDERR "Done ($certnum CA certs processed, $skipnum untrusted skipped).\n" if (!$opt_q);
 
 exit;
-
-
