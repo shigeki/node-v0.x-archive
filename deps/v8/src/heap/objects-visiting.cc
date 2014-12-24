@@ -5,7 +5,6 @@
 #include "src/v8.h"
 
 #include "src/heap/objects-visiting.h"
-#include "src/ic-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -69,6 +68,9 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
 
     case PROPERTY_CELL_TYPE:
       return kVisitPropertyCell;
+
+    case WEAK_CELL_TYPE:
+      return kVisitWeakCell;
 
     case JS_SET_TYPE:
       return GetVisitorIdForSize(kVisitStruct, kVisitStructGeneric,

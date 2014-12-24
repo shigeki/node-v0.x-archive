@@ -142,11 +142,18 @@ inline Register Register::FromAllocationIndex(int index)  {
 
 
 struct X87Register {
-  static const int kMaxNumAllocatableRegisters = 8;
+  static const int kMaxNumAllocatableRegisters = 6;
   static const int kMaxNumRegisters = 8;
   static int NumAllocatableRegisters() {
     return kMaxNumAllocatableRegisters;
   }
+
+
+  // TODO(turbofan): Proper support for float32.
+  static int NumAllocatableAliasedRegisters() {
+    return NumAllocatableRegisters();
+  }
+
 
   static int ToAllocationIndex(X87Register reg) {
     return reg.code_;
@@ -718,8 +725,11 @@ class Assembler : public AssemblerBase {
 
   void rcl(Register dst, uint8_t imm8);
   void rcr(Register dst, uint8_t imm8);
-  void ror(Register dst, uint8_t imm8);
-  void ror_cl(Register dst);
+
+  void ror(Register dst, uint8_t imm8) { ror(Operand(dst), imm8); }
+  void ror(const Operand& dst, uint8_t imm8);
+  void ror_cl(Register dst) { ror_cl(Operand(dst)); }
+  void ror_cl(const Operand& dst);
 
   void sar(Register dst, uint8_t imm8) { sar(Operand(dst), imm8); }
   void sar(const Operand& dst, uint8_t imm8);
@@ -852,6 +862,7 @@ class Assembler : public AssemblerBase {
 
   void fabs();
   void fchs();
+  void fsqrt();
   void fcos();
   void fsin();
   void fptan();
@@ -862,6 +873,7 @@ class Assembler : public AssemblerBase {
 
   void fadd(int i);
   void fadd_i(int i);
+  void fadd_d(const Operand& adr);
   void fsub(int i);
   void fsub_i(int i);
   void fmul(int i);
@@ -884,14 +896,19 @@ class Assembler : public AssemblerBase {
   void ffree(int i = 0);
 
   void ftst();
+  void fxam();
   void fucomp(int i);
   void fucompp();
   void fucomi(int i);
   void fucomip();
   void fcompp();
   void fnstsw_ax();
+  void fldcw(const Operand& adr);
+  void fnstcw(const Operand& adr);
   void fwait();
   void fnclex();
+  void fnsave(const Operand& adr);
+  void frstor(const Operand& adr);
 
   void frndint();
 
@@ -901,9 +918,6 @@ class Assembler : public AssemblerBase {
   void cpuid();
 
   // TODO(lrn): Need SFENCE for movnt?
-
-  // Debugging
-  void Print();
 
   // Check the code size generated from label to here.
   int SizeOfCodeGeneratedSince(Label* label) {

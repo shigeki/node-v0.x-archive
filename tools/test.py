@@ -40,6 +40,7 @@ import tempfile
 import time
 import threading
 import utils
+import multiprocessing
 
 from os.path import join, dirname, abspath, basename, isdir, exists
 from datetime import datetime
@@ -58,9 +59,13 @@ class ProgressIndicator(object):
   def __init__(self, cases, flaky_tests_mode):
     self.cases = cases
     self.flaky_tests_mode = flaky_tests_mode
-    self.queue = Queue(len(cases))
+    self.parallel_queue = Queue(len(cases))
+    self.sequential_queue = Queue(len(cases))
     for case in cases:
-      self.queue.put_nowait(case)
+      if case.parallel:
+        self.parallel_queue.put_nowait(case)
+      else:
+        self.sequential_queue.put_nowait(case)
     self.succeeded = 0
     self.remaining = len(cases)
     self.total = len(cases)
@@ -87,11 +92,11 @@ class ProgressIndicator(object):
     # That way -j1 avoids threading altogether which is a nice fallback
     # in case of threading problems.
     for i in xrange(tasks - 1):
-      thread = threading.Thread(target=self.RunSingle, args=[])
+      thread = threading.Thread(target=self.RunSingle, args=[True, i + 1])
       threads.append(thread)
       thread.start()
     try:
-      self.RunSingle()
+      self.RunSingle(False, 0)
       # Wait for the remaining threads
       for thread in threads:
         # Use a timeout so that signals (ctrl-c) will be processed.
@@ -105,13 +110,19 @@ class ProgressIndicator(object):
     self.Done()
     return not self.failed
 
-  def RunSingle(self):
+  def RunSingle(self, parallel, thread_id):
     while not self.terminate:
       try:
-        test = self.queue.get_nowait()
+        test = self.parallel_queue.get_nowait()
       except Empty:
-        return
+        if parallel:
+          return
+        try:
+          test = self.sequential_queue.get_nowait()
+        except Empty:
+          return
       case = test.case
+      case.thread_id = thread_id
       self.lock.acquire()
       self.AboutToRun(case)
       self.lock.release()
@@ -375,11 +386,14 @@ class CommandOutput(object):
 
 class TestCase(object):
 
-  def __init__(self, context, path, mode):
+  def __init__(self, context, path, arch, mode):
     self.path = path
     self.context = context
     self.duration = None
+    self.arch = arch
     self.mode = mode
+    self.parallel = False
+    self.thread_id = 0
 
   def IsNegative(self):
     return False
@@ -398,11 +412,12 @@ class TestCase(object):
   def GetSource(self):
     return "(no source available)"
 
-  def RunCommand(self, command):
+  def RunCommand(self, command, env):
     full_command = self.context.processor(command)
     output = Execute(full_command,
                      self.context,
-                     self.context.GetTimeout(self.mode))
+                     self.context.GetTimeout(self.mode),
+                     env)
     self.Cleanup()
     return TestOutput(self,
                       full_command,
@@ -419,7 +434,9 @@ class TestCase(object):
     self.BeforeRun()
 
     try:
-      result = self.RunCommand(self.GetCommand())
+      result = self.RunCommand(self.GetCommand(), {
+        "TEST_THREAD_ID": "%d" % self.thread_id
+      })
     finally:
       # Tests can leave the tty in non-blocking mode. If the test runner
       # tries to print to stdout/stderr after that and the tty buffer is
@@ -558,15 +575,22 @@ def CheckedUnlink(name):
     PrintError("os.unlink() " + str(e))
 
 
-def Execute(args, context, timeout=None):
+def Execute(args, context, timeout=None, env={}):
   (fd_out, outname) = tempfile.mkstemp()
   (fd_err, errname) = tempfile.mkstemp()
+
+  # Extend environment
+  env_copy = os.environ.copy()
+  for key, value in env.iteritems():
+    env_copy[key] = value
+
   (process, exit_code, timed_out) = RunProcess(
     context,
     timeout,
     args = args,
     stdout = fd_out,
     stderr = fd_err,
+    env = env_copy
   )
   os.close(fd_out)
   os.close(fd_err)
@@ -651,9 +675,10 @@ class TestRepository(TestSuite):
   def GetBuildRequirements(self, path, context):
     return self.GetConfiguration(context).GetBuildRequirements()
 
-  def AddTestsToList(self, result, current_path, path, context, mode):
+  def AddTestsToList(self, result, current_path, path, context, arch, mode):
     for v in VARIANT_FLAGS:
-      tests = self.GetConfiguration(context).ListTests(current_path, path, mode)
+      tests = self.GetConfiguration(context).ListTests(current_path, path,
+                                                       arch, mode)
       for t in tests: t.variant_flags = v
       result += tests
 
@@ -676,14 +701,14 @@ class LiteralTestSuite(TestSuite):
         result += test.GetBuildRequirements(rest, context)
     return result
 
-  def ListTests(self, current_path, path, context, mode):
+  def ListTests(self, current_path, path, context, arch, mode):
     (name, rest) = CarCdr(path)
     result = [ ]
     for test in self.tests:
       test_name = test.GetName()
       if not name or name.match(test_name):
         full_path = current_path + [test_name]
-        test.AddTestsToList(result, full_path, path, context, mode)
+        test.AddTestsToList(result, full_path, path, context, arch, mode)
     result.sort(cmp=lambda a, b: cmp(a.GetName(), b.GetName()))
     return result
 
@@ -715,11 +740,11 @@ class Context(object):
     self.suppress_dialogs = suppress_dialogs
     self.store_unexpected_output = store_unexpected_output
 
-  def GetVm(self, mode):
-    if mode == 'debug':
-      name = 'out/Debug/node'
+  def GetVm(self, arch, mode):
+    if arch == 'none':
+      name = 'out/Debug/node' if mode == 'debug' else 'out/Release/node'
     else:
-      name = 'out/Release/node'
+      name = 'out/%s.%s/node' % (arch, mode)
 
     # Currently GYP does not support output_dir for MSVS.
     # http://code.google.com/p/gyp/issues/detail?id=40
@@ -735,9 +760,6 @@ class Context(object):
         name = os.path.abspath(name + '.exe')
 
     return name
-
-  def GetVmCommand(self, testcase, mode):
-    return [self.GetVm(mode)] + self.GetVmFlags(testcase, mode)
 
   def GetVmFlags(self, testcase, mode):
     return testcase.variant_flags + FLAGS[mode]
@@ -1069,6 +1091,7 @@ class ClassifiedTest(object):
   def __init__(self, case, outcomes):
     self.case = case
     self.outcomes = outcomes
+    self.parallel = self.case.parallel
 
 
 class Configuration(object):
@@ -1211,8 +1234,6 @@ def BuildOptions():
       default='none')
   result.add_option("--snapshot", help="Run the tests with snapshot turned on",
       default=False, action="store_true")
-  result.add_option("--simulator", help="Run tests with architecture simulator",
-      default='none')
   result.add_option("--special-command", default=None)
   result.add_option("--use-http1", help="Pass --use-http1 switch to node",
       default=False, action="store_true")
@@ -1227,6 +1248,8 @@ def BuildOptions():
       default=False, action="store_true")
   result.add_option("-j", help="The number of parallel tasks to run",
       default=1, type="int")
+  result.add_option("-J", help="Run tasks in parallel on all cores",
+      default=False, action="store_true")
   result.add_option("--time", help="Print timing information after running",
       default=False, action="store_true")
   result.add_option("--suppress-dialogs", help="Suppress Windows dialogs for crashing tests",
@@ -1246,29 +1269,10 @@ def BuildOptions():
 def ProcessOptions(options):
   global VERBOSE
   VERBOSE = options.verbose
+  options.arch = options.arch.split(',')
   options.mode = options.mode.split(',')
-  for mode in options.mode:
-    if not mode in ['debug', 'release']:
-      print "Unknown mode %s" % mode
-      return False
-  if options.simulator != 'none':
-    # Simulator argument was set. Make sure arch and simulator agree.
-    if options.simulator != options.arch:
-      if options.arch == 'none':
-        options.arch = options.simulator
-      else:
-        print "Architecture %s does not match sim %s" %(options.arch, options.simulator)
-        return False
-    # Ensure that the simulator argument is handed down to scons.
-    options.scons_flags.append("simulator=" + options.simulator)
-  else:
-    # If options.arch is not set by the command line and no simulator setting
-    # was found, set the arch to the guess.
-    if options.arch == 'none':
-      options.arch = ARCH_GUESS
-    options.scons_flags.append("arch=" + options.arch)
-  if options.snapshot:
-    options.scons_flags.append("snapshot=on")
+  if options.J:
+    options.j = multiprocessing.cpu_count()
   def CheckTestMode(name, option):
     if not option in ["run", "skip", "dontcare"]:
       print "Unknown %s mode %s" % (name, option)
@@ -1341,7 +1345,8 @@ def GetSpecialCommandProcessor(value):
 
 
 BUILT_IN_TESTS = [
-  'simple',
+  'sequential',
+  'parallel',
   'pummel',
   'message',
   'internet',
@@ -1433,25 +1438,28 @@ def Main():
   unclassified_tests = [ ]
   globally_unused_rules = None
   for path in paths:
-    for mode in options.mode:
-      if not exists(context.GetVm(mode)):
-        print "Can't find shell executable: '%s'" % context.GetVm(mode)
-        continue
-      env = {
-        'mode': mode,
-        'system': utils.GuessOS(),
-        'arch': options.arch,
-        'simulator': options.simulator
-      }
-      test_list = root.ListTests([], path, context, mode)
-      unclassified_tests += test_list
-      (cases, unused_rules, all_outcomes) = config.ClassifyTests(test_list, env)
-      if globally_unused_rules is None:
-        globally_unused_rules = set(unused_rules)
-      else:
-        globally_unused_rules = globally_unused_rules.intersection(unused_rules)
-      all_cases += cases
-      all_unused.append(unused_rules)
+    for arch in options.arch:
+      for mode in options.mode:
+        vm = context.GetVm(arch, mode)
+        if not exists(vm):
+          print "Can't find shell executable: '%s'" % vm
+          continue
+        env = {
+          'mode': mode,
+          'system': utils.GuessOS(),
+          'arch': arch,
+        }
+        test_list = root.ListTests([], path, context, arch, mode)
+        unclassified_tests += test_list
+        (cases, unused_rules, all_outcomes) = (
+            config.ClassifyTests(test_list, env))
+        if globally_unused_rules is None:
+          globally_unused_rules = set(unused_rules)
+        else:
+          globally_unused_rules = (
+              globally_unused_rules.intersection(unused_rules))
+        all_cases += cases
+        all_unused.append(unused_rules)
 
   if options.cat:
     visited = set()

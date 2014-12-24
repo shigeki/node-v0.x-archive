@@ -8,6 +8,7 @@
 #include "src/v8.h"
 
 #include "src/compiler/common-operator.h"
+#include "src/compiler/generic-node-inl.h"
 #include "src/compiler/node-properties.h"
 #include "src/compiler/opcodes.h"
 #include "src/compiler/operator.h"
@@ -29,8 +30,12 @@ inline int NodeProperties::FirstContextIndex(Node* node) {
   return PastValueIndex(node);
 }
 
-inline int NodeProperties::FirstEffectIndex(Node* node) {
+inline int NodeProperties::FirstFrameStateIndex(Node* node) {
   return PastContextIndex(node);
+}
+
+inline int NodeProperties::FirstEffectIndex(Node* node) {
+  return PastFrameStateIndex(node);
 }
 
 inline int NodeProperties::FirstControlIndex(Node* node) {
@@ -39,8 +44,7 @@ inline int NodeProperties::FirstControlIndex(Node* node) {
 
 
 inline int NodeProperties::PastValueIndex(Node* node) {
-  return FirstValueIndex(node) +
-         OperatorProperties::GetValueInputCount(node->op());
+  return FirstValueIndex(node) + node->op()->ValueInputCount();
 }
 
 inline int NodeProperties::PastContextIndex(Node* node) {
@@ -48,14 +52,17 @@ inline int NodeProperties::PastContextIndex(Node* node) {
          OperatorProperties::GetContextInputCount(node->op());
 }
 
+inline int NodeProperties::PastFrameStateIndex(Node* node) {
+  return FirstFrameStateIndex(node) +
+         OperatorProperties::GetFrameStateInputCount(node->op());
+}
+
 inline int NodeProperties::PastEffectIndex(Node* node) {
-  return FirstEffectIndex(node) +
-         OperatorProperties::GetEffectInputCount(node->op());
+  return FirstEffectIndex(node) + node->op()->EffectInputCount();
 }
 
 inline int NodeProperties::PastControlIndex(Node* node) {
-  return FirstControlIndex(node) +
-         OperatorProperties::GetControlInputCount(node->op());
+  return FirstControlIndex(node) + node->op()->ControlInputCount();
 }
 
 
@@ -63,8 +70,7 @@ inline int NodeProperties::PastControlIndex(Node* node) {
 // Input accessors.
 
 inline Node* NodeProperties::GetValueInput(Node* node, int index) {
-  DCHECK(0 <= index &&
-         index < OperatorProperties::GetValueInputCount(node->op()));
+  DCHECK(0 <= index && index < node->op()->ValueInputCount());
   return node->InputAt(FirstValueIndex(node) + index);
 }
 
@@ -73,18 +79,25 @@ inline Node* NodeProperties::GetContextInput(Node* node) {
   return node->InputAt(FirstContextIndex(node));
 }
 
+inline Node* NodeProperties::GetFrameStateInput(Node* node) {
+  DCHECK(OperatorProperties::HasFrameStateInput(node->op()));
+  return node->InputAt(FirstFrameStateIndex(node));
+}
+
 inline Node* NodeProperties::GetEffectInput(Node* node, int index) {
-  DCHECK(0 <= index &&
-         index < OperatorProperties::GetEffectInputCount(node->op()));
+  DCHECK(0 <= index && index < node->op()->EffectInputCount());
   return node->InputAt(FirstEffectIndex(node) + index);
 }
 
 inline Node* NodeProperties::GetControlInput(Node* node, int index) {
-  DCHECK(0 <= index &&
-         index < OperatorProperties::GetControlInputCount(node->op()));
+  DCHECK(0 <= index && index < node->op()->ControlInputCount());
   return node->InputAt(FirstControlIndex(node) + index);
 }
 
+inline int NodeProperties::GetFrameStateIndex(Node* node) {
+  DCHECK(OperatorProperties::HasFrameStateInput(node->op()));
+  return FirstFrameStateIndex(node);
+}
 
 // -----------------------------------------------------------------------------
 // Edge kinds.
@@ -100,7 +113,7 @@ inline bool NodeProperties::IsInputRange(Node::Edge edge, int first, int num) {
 inline bool NodeProperties::IsValueEdge(Node::Edge edge) {
   Node* node = edge.from();
   return IsInputRange(edge, FirstValueIndex(node),
-                      OperatorProperties::GetValueInputCount(node->op()));
+                      node->op()->ValueInputCount());
 }
 
 inline bool NodeProperties::IsContextEdge(Node::Edge edge) {
@@ -112,13 +125,13 @@ inline bool NodeProperties::IsContextEdge(Node::Edge edge) {
 inline bool NodeProperties::IsEffectEdge(Node::Edge edge) {
   Node* node = edge.from();
   return IsInputRange(edge, FirstEffectIndex(node),
-                      OperatorProperties::GetEffectInputCount(node->op()));
+                      node->op()->EffectInputCount());
 }
 
 inline bool NodeProperties::IsControlEdge(Node::Edge edge) {
   Node* node = edge.from();
   return IsInputRange(edge, FirstControlIndex(node),
-                      OperatorProperties::GetControlInputCount(node->op()));
+                      node->op()->ControlInputCount());
 }
 
 
@@ -139,22 +152,68 @@ inline void NodeProperties::ReplaceControlInput(Node* node, Node* control) {
 
 inline void NodeProperties::ReplaceEffectInput(Node* node, Node* effect,
                                                int index) {
-  DCHECK(index < OperatorProperties::GetEffectInputCount(node->op()));
+  DCHECK(index < node->op()->EffectInputCount());
   return node->ReplaceInput(FirstEffectIndex(node) + index, effect);
 }
 
+inline void NodeProperties::ReplaceFrameStateInput(Node* node,
+                                                   Node* frame_state) {
+  DCHECK(OperatorProperties::HasFrameStateInput(node->op()));
+  node->ReplaceInput(FirstFrameStateIndex(node), frame_state);
+}
+
 inline void NodeProperties::RemoveNonValueInputs(Node* node) {
-  node->TrimInputCount(OperatorProperties::GetValueInputCount(node->op()));
+  node->TrimInputCount(node->op()->ValueInputCount());
+}
+
+
+// Replace value uses of {node} with {value} and effect uses of {node} with
+// {effect}. If {effect == NULL}, then use the effect input to {node}.
+inline void NodeProperties::ReplaceWithValue(Node* node, Node* value,
+                                             Node* effect) {
+  DCHECK(node->op()->ControlOutputCount() == 0);
+  if (effect == NULL && node->op()->EffectInputCount() > 0) {
+    effect = NodeProperties::GetEffectInput(node);
+  }
+
+  // Requires distinguishing between value and effect edges.
+  UseIter iter = node->uses().begin();
+  while (iter != node->uses().end()) {
+    if (NodeProperties::IsEffectEdge(iter.edge())) {
+      DCHECK_NE(NULL, effect);
+      iter = iter.UpdateToAndIncrement(effect);
+    } else {
+      iter = iter.UpdateToAndIncrement(value);
+    }
+  }
 }
 
 
 // -----------------------------------------------------------------------------
 // Type Bounds.
 
-inline Bounds NodeProperties::GetBounds(Node* node) { return node->bounds(); }
+inline bool NodeProperties::IsTyped(Node* node) {
+  Bounds bounds = node->bounds();
+  DCHECK((bounds.lower == NULL) == (bounds.upper == NULL));
+  return bounds.upper != NULL;
+}
+
+inline Bounds NodeProperties::GetBounds(Node* node) {
+  DCHECK(IsTyped(node));
+  return node->bounds();
+}
 
 inline void NodeProperties::SetBounds(Node* node, Bounds b) {
+  DCHECK(b.lower != NULL && b.upper != NULL);
   node->set_bounds(b);
+}
+
+inline bool NodeProperties::AllValueInputsAreTyped(Node* node) {
+  int input_count = node->op()->ValueInputCount();
+  for (int i = 0; i < input_count; ++i) {
+    if (!IsTyped(GetValueInput(node, i))) return false;
+  }
+  return true;
 }
 
 

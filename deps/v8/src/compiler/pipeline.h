@@ -17,11 +17,10 @@ namespace internal {
 namespace compiler {
 
 // Clients of this interface shouldn't depend on lots of compiler internals.
-class CallDescriptor;
 class Graph;
-class Schedule;
-class SourcePositionTable;
 class Linkage;
+class PipelineData;
+class Schedule;
 
 class Pipeline {
  public:
@@ -35,20 +34,8 @@ class Pipeline {
   Handle<Code> GenerateCodeForMachineGraph(Linkage* linkage, Graph* graph,
                                            Schedule* schedule = NULL);
 
-  CompilationInfo* info() const { return info_; }
-  Zone* zone() { return info_->zone(); }
-  Isolate* isolate() { return info_->isolate(); }
-
   static inline bool SupportedBackend() { return V8_TURBOFAN_BACKEND != 0; }
   static inline bool SupportedTarget() { return V8_TURBOFAN_TARGET != 0; }
-
-  static inline bool VerifyGraphs() {
-#ifdef DEBUG
-    return true;
-#else
-    return FLAG_turbo_verify;
-#endif
-  }
 
   static void SetUp();
   static void TearDown();
@@ -56,10 +43,13 @@ class Pipeline {
  private:
   CompilationInfo* info_;
 
-  Schedule* ComputeSchedule(Graph* graph);
-  void VerifyAndPrintGraph(Graph* graph, const char* phase);
-  Handle<Code> GenerateCode(Linkage* linkage, Graph* graph, Schedule* schedule,
-                            SourcePositionTable* source_positions);
+  CompilationInfo* info() const { return info_; }
+  Isolate* isolate() { return info_->isolate(); }
+
+  void ComputeSchedule(PipelineData* data);
+  void VerifyAndPrintGraph(Graph* graph, const char* phase,
+                           bool untyped = false);
+  Handle<Code> GenerateCode(Linkage* linkage, PipelineData* data);
 };
 }
 }

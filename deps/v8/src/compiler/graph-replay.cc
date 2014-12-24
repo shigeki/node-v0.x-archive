@@ -24,14 +24,13 @@ void GraphReplayPrinter::PrintReplay(Graph* graph) {
 }
 
 
-GenericGraphVisit::Control GraphReplayPrinter::Pre(Node* node) {
+void GraphReplayPrinter::Pre(Node* node) {
   PrintReplayOpCreator(node->op());
   PrintF("  Node* n%d = graph.NewNode(op", node->id());
   for (int i = 0; i < node->InputCount(); ++i) {
     PrintF(", nil");
   }
   PrintF("); USE(n%d);\n", node->id());
-  return GenericGraphVisit::CONTINUE;
 }
 
 
@@ -40,7 +39,7 @@ void GraphReplayPrinter::PostEdge(Node* from, int index, Node* to) {
 }
 
 
-void GraphReplayPrinter::PrintReplayOpCreator(Operator* op) {
+void GraphReplayPrinter::PrintReplayOpCreator(const Operator* op) {
   IrOpcode::Value opcode = static_cast<IrOpcode::Value>(op->opcode());
   const char* builder =
       IrOpcode::IsCommonOpcode(opcode) ? "common_builder" : "js_builder";
@@ -63,11 +62,11 @@ void GraphReplayPrinter::PrintReplayOpCreator(Operator* op) {
       PrintF("%d", op->InputCount());
       break;
     case IrOpcode::kEffectPhi:
-      PrintF("%d", OperatorProperties::GetEffectInputCount(op));
+      PrintF("%d", op->EffectInputCount());
       break;
     case IrOpcode::kLoop:
     case IrOpcode::kMerge:
-      PrintF("%d", OperatorProperties::GetControlInputCount(op));
+      PrintF("%d", op->ControlInputCount());
       break;
     default:
       break;

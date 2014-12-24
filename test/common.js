@@ -27,8 +27,17 @@ var os = require('os');
 exports.testDir = path.dirname(__filename);
 exports.fixturesDir = path.join(exports.testDir, 'fixtures');
 exports.libDir = path.join(exports.testDir, '../lib');
-exports.tmpDir = path.join(exports.testDir, 'tmp');
+exports.tmpDirName = 'tmp';
 exports.PORT = +process.env.NODE_COMMON_PORT || 12346;
+
+if (process.env.TEST_THREAD_ID) {
+  // Distribute ports in parallel tests
+  if (!process.env.NODE_COMMON_PORT)
+    exports.PORT += +process.env.TEST_THREAD_ID * 100;
+
+  exports.tmpDirName += '.' + process.env.TEST_THREAD_ID;
+}
+exports.tmpDir = path.join(exports.testDir, exports.tmpDirName);
 
 exports.opensslCli = path.join(path.dirname(process.execPath), 'openssl-cli');
 if (process.platform === 'win32') {
@@ -37,8 +46,23 @@ if (process.platform === 'win32') {
 } else {
   exports.PIPE = exports.tmpDir + '/test.sock';
 }
-if (!fs.existsSync(exports.opensslCli))
+
+if (process.env.NODE_COMMON_PIPE) {
+  exports.PIPE = process.env.NODE_COMMON_PIPE;
+  // Remove manually, the test runner won't do it
+  // for us like it does for files in test/tmp.
+  try {
+    fs.unlinkSync(exports.PIPE);
+  } catch (e) {
+    // Ignore.
+  }
+}
+
+try {
+  fs.accessSync(exports.opensslCli);
+} catch (err) {
   exports.opensslCli = false;
+}
 
 if (process.platform === 'win32') {
   exports.faketimeCli = false;
@@ -298,3 +322,12 @@ exports.isValidHostname = function(str) {
 
   return !!str.match(re) && str.length <= 255;
 }
+
+exports.fileExists = function(pathname) {
+  try {
+    fs.accessSync(pathname);
+    return true;
+  } catch (err) {
+    return false;
+  }
+};

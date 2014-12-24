@@ -28,6 +28,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
+from collections import OrderedDict
 import itertools
 import multiprocessing
 import optparse
@@ -43,6 +44,7 @@ import time
 from testrunner.local import execution
 from testrunner.local import progress
 from testrunner.local import testsuite
+from testrunner.local.testsuite import VARIANT_FLAGS
 from testrunner.local import utils
 from testrunner.local import verbose
 from testrunner.network import network_execution
@@ -50,18 +52,37 @@ from testrunner.objects import context
 
 
 ARCH_GUESS = utils.DefaultArch()
-DEFAULT_TESTS = ["mjsunit", "fuzz-natives", "base-unittests",
-                 "cctest", "compiler-unittests", "message", "preparser"]
+DEFAULT_TESTS = [
+  "mjsunit",
+  "unittests",
+  "cctest",
+  "message",
+  "preparser",
+]
+
+# Map of test name synonyms to lists of test suites. Should be ordered by
+# expected runtimes (suites with slow test cases first). These groups are
+# invoked in seperate steps on the bots.
+TEST_MAP = {
+  "default": [
+    "mjsunit",
+    "cctest",
+    "message",
+    "preparser",
+  ],
+  "optimize_for_size": [
+    "mjsunit",
+    "cctest",
+    "webkit",
+  ],
+  "unittests": [
+    "unittests",
+  ],
+}
+
 TIMEOUT_DEFAULT = 60
 TIMEOUT_SCALEFACTOR = {"debug"   : 4,
                        "release" : 1 }
-
-# Use this to run several variants of the tests.
-VARIANT_FLAGS = {
-    "default": [],
-    "stress": ["--stress-opt", "--always-opt"],
-    "turbofan": ["--turbo-filter=*", "--always-opt"],
-    "nocrankshaft": ["--nocrankshaft"]}
 
 VARIANTS = ["default", "stress", "turbofan", "nocrankshaft"]
 
@@ -230,6 +251,9 @@ def BuildOptions():
                     default="v8tests")
   result.add_option("--random-seed", default=0, dest="random_seed",
                     help="Default seed for initializing random generator")
+  result.add_option("--msan",
+                    help="Regard test expectations for MSAN",
+                    default=False, action="store_true")
   return result
 
 
@@ -282,6 +306,11 @@ def ProcessOptions(options):
 
   if options.tsan:
     VARIANTS = ["default"]
+    suppressions_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     'sanitizers', 'tsan_suppressions.txt')
+    tsan_options = '%s suppressions=%s' % (
+        os.environ.get('TSAN_OPTIONS', ''), suppressions_file)
+    os.environ['TSAN_OPTIONS'] = tsan_options
 
   if options.j == 0:
     options.j = multiprocessing.cpu_count()
@@ -294,10 +323,15 @@ def ProcessOptions(options):
     return reduce(lambda x, y: x + y, args) <= 1
 
   if not excl(options.no_stress, options.stress_only, options.no_variants,
-              bool(options.variants), options.quickcheck):
+              bool(options.variants)):
     print("Use only one of --no-stress, --stress-only, --no-variants, "
-          "--variants, or --quickcheck.")
+          "or --variants.")
     return False
+  if options.quickcheck:
+    VARIANTS = ["default", "stress"]
+    options.flaky_tests = "skip"
+    options.slow_tests = "skip"
+    options.pass_fail_tests = "skip"
   if options.no_stress:
     VARIANTS = ["default", "nocrankshaft"]
   if options.no_variants:
@@ -309,11 +343,6 @@ def ProcessOptions(options):
     if not set(VARIANTS).issubset(VARIANT_FLAGS.keys()):
       print "All variants must be in %s" % str(VARIANT_FLAGS.keys())
       return False
-  if options.quickcheck:
-    VARIANTS = ["default", "stress"]
-    options.flaky_tests = "skip"
-    options.slow_tests = "skip"
-    options.pass_fail_tests = "skip"
   if options.predictable:
     VARIANTS = ["default"]
     options.extra_flags.append("--predictable")
@@ -377,14 +406,23 @@ def Main():
 
   suite_paths = utils.GetSuitePaths(join(workspace, "test"))
 
+  # Expand arguments with grouped tests. The args should reflect the list of
+  # suites as otherwise filters would break.
+  def ExpandTestGroups(name):
+    if name in TEST_MAP:
+      return [suite for suite in TEST_MAP[arg]]
+    else:
+      return [name]
+  args = reduce(lambda x, y: x + y,
+         [ExpandTestGroups(arg) for arg in args],
+         [])
+
   if len(args) == 0:
     suite_paths = [ s for s in DEFAULT_TESTS if s in suite_paths ]
   else:
-    args_suites = set()
+    args_suites = OrderedDict() # Used as set
     for arg in args:
-      suite = arg.split(os.path.sep)[0]
-      if not suite in args_suites:
-        args_suites.add(suite)
+      args_suites[arg.split(os.path.sep)[0]] = True
     suite_paths = [ s for s in args_suites if s in suite_paths ]
 
   suites = []
@@ -468,6 +506,7 @@ def Execute(arch, mode, args, options, suites, workspace):
     "simulator": utils.UseSimulator(arch),
     "system": utils.GuessOS(),
     "tsan": options.tsan,
+    "msan": options.msan,
   }
   all_tests = []
   num_tests = 0

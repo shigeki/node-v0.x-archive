@@ -5,6 +5,8 @@
 #ifndef V8_HYDROGEN_GVN_H_
 #define V8_HYDROGEN_GVN_H_
 
+#include <iosfwd>
+
 #include "src/compiler.h"
 #include "src/hydrogen.h"
 #include "src/hydrogen-instructions.h"
@@ -13,13 +15,11 @@
 namespace v8 {
 namespace internal {
 
-class OStream;
-
 // This class extends GVNFlagSet with additional "special" dynamic side effects,
 // which can be used to represent side effects that cannot be expressed using
 // the GVNFlags of an HInstruction. These special side effects are tracked by a
 // SideEffectsTracker (see below).
-class SideEffects V8_FINAL {
+class SideEffects FINAL {
  public:
   static const int kNumberOfSpecials = 64 - kNumberOfFlags;
 
@@ -63,14 +63,14 @@ struct TrackedEffects;
 // SideEffects class (see above). This way unrelated global variable/inobject
 // field stores don't prevent hoisting and merging of global variable/inobject
 // field loads.
-class SideEffectsTracker V8_FINAL BASE_EMBEDDED {
+class SideEffectsTracker FINAL BASE_EMBEDDED {
  public:
   SideEffectsTracker() : num_global_vars_(0), num_inobject_fields_(0) {}
   SideEffects ComputeChanges(HInstruction* instr);
   SideEffects ComputeDependsOn(HInstruction* instr);
 
  private:
-  friend OStream& operator<<(OStream& os, const TrackedEffects& f);
+  friend std::ostream& operator<<(std::ostream& os, const TrackedEffects& f);
   bool ComputeGlobalVar(Unique<Cell> cell, int* index);
   bool ComputeInobjectField(HObjectAccess access, int* index);
 
@@ -107,11 +107,11 @@ struct TrackedEffects {
 };
 
 
-OStream& operator<<(OStream& os, const TrackedEffects& f);
+std::ostream& operator<<(std::ostream& os, const TrackedEffects& f);
 
 
 // Perform common subexpression elimination and loop-invariant code motion.
-class HGlobalValueNumberingPhase V8_FINAL : public HPhase {
+class HGlobalValueNumberingPhase FINAL : public HPhase {
  public:
   explicit HGlobalValueNumberingPhase(HGraph* graph);
 

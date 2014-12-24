@@ -6,9 +6,7 @@
 #include "src/compiler/js-operator.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/node-properties-inl.h"
-#include "src/compiler/simplified-node-factory.h"
 #include "src/compiler/source-position.h"
-#include "src/compiler/typer.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/compiler/function-tester.h"
 #include "test/cctest/compiler/graph-builder-tester.h"
@@ -16,18 +14,16 @@
 using namespace v8::internal;
 using namespace v8::internal::compiler;
 
-class ContextSpecializationTester
-    : public HandleAndZoneScope,
-      public DirectGraphBuilder,
-      public SimplifiedNodeFactory<ContextSpecializationTester> {
+class ContextSpecializationTester : public HandleAndZoneScope,
+                                    public DirectGraphBuilder {
  public:
   ContextSpecializationTester()
       : DirectGraphBuilder(new (main_zone()) Graph(main_zone())),
         common_(main_zone()),
         javascript_(main_zone()),
+        machine_(),
         simplified_(main_zone()),
-        typer_(main_zone()),
-        jsgraph_(graph(), common(), &typer_),
+        jsgraph_(graph(), common(), &javascript_, &machine_),
         info_(main_isolate(), main_zone()) {}
 
   Factory* factory() { return main_isolate()->factory(); }
@@ -40,8 +36,8 @@ class ContextSpecializationTester
  private:
   CommonOperatorBuilder common_;
   JSOperatorBuilder javascript_;
+  MachineOperatorBuilder machine_;
   SimplifiedOperatorBuilder simplified_;
-  Typer typer_;
   JSGraph jsgraph_;
   CompilationInfo info_;
 };
@@ -93,12 +89,11 @@ TEST(ReduceJSLoadContext) {
     CHECK(r.Changed());
     Node* new_context_input = NodeProperties::GetValueInput(r.replacement(), 0);
     CHECK_EQ(IrOpcode::kHeapConstant, new_context_input->opcode());
-    ValueMatcher<Handle<Context> > match(new_context_input);
-    CHECK_EQ(*native, *match.Value());
-    ContextAccess access = static_cast<Operator1<ContextAccess>*>(
-                               r.replacement()->op())->parameter();
-    CHECK_EQ(Context::GLOBAL_EVAL_FUN_INDEX, access.index());
-    CHECK_EQ(0, access.depth());
+    HeapObjectMatcher<Context> match(new_context_input);
+    CHECK_EQ(*native, *match.Value().handle());
+    ContextAccess access = OpParameter<ContextAccess>(r.replacement());
+    CHECK_EQ(Context::GLOBAL_EVAL_FUN_INDEX, static_cast<int>(access.index()));
+    CHECK_EQ(0, static_cast<int>(access.depth()));
     CHECK_EQ(false, access.immutable());
   }
 
@@ -110,9 +105,9 @@ TEST(ReduceJSLoadContext) {
     CHECK(r.Changed());
     CHECK(r.replacement() != load);
 
-    ValueMatcher<Handle<Object> > match(r.replacement());
+    HeapObjectMatcher<Object> match(r.replacement());
     CHECK(match.HasValue());
-    CHECK_EQ(*expected, *match.Value());
+    CHECK_EQ(*expected, *match.Value().handle());
   }
 
   // TODO(titzer): test with other kinds of contexts, e.g. a function context.
@@ -174,12 +169,11 @@ TEST(ReduceJSStoreContext) {
     CHECK(r.Changed());
     Node* new_context_input = NodeProperties::GetValueInput(r.replacement(), 0);
     CHECK_EQ(IrOpcode::kHeapConstant, new_context_input->opcode());
-    ValueMatcher<Handle<Context> > match(new_context_input);
-    CHECK_EQ(*native, *match.Value());
-    ContextAccess access = static_cast<Operator1<ContextAccess>*>(
-                               r.replacement()->op())->parameter();
-    CHECK_EQ(Context::GLOBAL_EVAL_FUN_INDEX, access.index());
-    CHECK_EQ(0, access.depth());
+    HeapObjectMatcher<Context> match(new_context_input);
+    CHECK_EQ(*native, *match.Value().handle());
+    ContextAccess access = OpParameter<ContextAccess>(r.replacement());
+    CHECK_EQ(Context::GLOBAL_EVAL_FUN_INDEX, static_cast<int>(access.index()));
+    CHECK_EQ(0, static_cast<int>(access.depth()));
     CHECK_EQ(false, access.immutable());
   }
 }
@@ -216,11 +210,12 @@ TEST(SpecializeToContext) {
                            const_context, const_context, effect_in);
 
 
-    Node* value_use = t.ChangeTaggedToInt32(load);
+    Node* value_use = t.NewNode(t.simplified()->ChangeTaggedToInt32(), load);
     Node* other_load = t.NewNode(t.javascript()->LoadContext(0, slot, true),
                                  param_context, param_context, load);
     Node* effect_use = other_load;
-    Node* other_use = t.ChangeTaggedToInt32(other_load);
+    Node* other_use =
+        t.NewNode(t.simplified()->ChangeTaggedToInt32(), other_load);
 
     Node* add = t.NewNode(t.javascript()->Add(), value_use, other_use,
                           param_context, other_load, start);
@@ -244,9 +239,9 @@ TEST(SpecializeToContext) {
     CHECK_EQ(other_load, other_use->InputAt(0));
 
     Node* replacement = value_use->InputAt(0);
-    ValueMatcher<Handle<Object> > match(replacement);
+    HeapObjectMatcher<Object> match(replacement);
     CHECK(match.HasValue());
-    CHECK_EQ(*expected, *match.Value());
+    CHECK_EQ(*expected, *match.Value().handle());
   }
   // TODO(titzer): clean up above test and test more complicated effects.
 }

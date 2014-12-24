@@ -5,80 +5,109 @@
 #ifndef V8_COMPILER_SCHEDULER_H_
 #define V8_COMPILER_SCHEDULER_H_
 
-#include <vector>
-
 #include "src/v8.h"
 
 #include "src/compiler/opcodes.h"
 #include "src/compiler/schedule.h"
-#include "src/zone-allocator.h"
+#include "src/compiler/zone-pool.h"
 #include "src/zone-containers.h"
 
 namespace v8 {
 namespace internal {
 namespace compiler {
 
+class SpecialRPONumberer;
+
 // Computes a schedule from a graph, placing nodes into basic blocks and
 // ordering the basic blocks in the special RPO order.
 class Scheduler {
  public:
-  // Create a new schedule and place all computations from the graph in it.
-  static Schedule* ComputeSchedule(Graph* graph);
+  // The complete scheduling algorithm. Creates a new schedule and places all
+  // nodes from the graph into it.
+  static Schedule* ComputeSchedule(ZonePool* zone_pool, Graph* graph);
 
   // Compute the RPO of blocks in an existing schedule.
-  static BasicBlockVector* ComputeSpecialRPO(Schedule* schedule);
+  static BasicBlockVector* ComputeSpecialRPO(ZonePool* zone_pool,
+                                             Schedule* schedule);
 
  private:
+  // Placement of a node changes during scheduling. The placement state
+  // transitions over time while the scheduler is choosing a position:
+  //
+  //                   +---------------------+-----+----> kFixed
+  //                  /                     /     /
+  //    kUnknown ----+------> kCoupled ----+     /
+  //                  \                         /
+  //                   +----> kSchedulable ----+--------> kScheduled
+  //
+  // 1) GetPlacement(): kUnknown -> kCoupled|kSchedulable|kFixed
+  // 2) UpdatePlacement(): kCoupled|kSchedulable -> kFixed|kScheduled
+  enum Placement { kUnknown, kSchedulable, kFixed, kCoupled, kScheduled };
+
+  // Per-node data tracked during scheduling.
+  struct SchedulerData {
+    BasicBlock* minimum_block_;  // Minimum legal RPO placement.
+    int unscheduled_count_;      // Number of unscheduled uses of this node.
+    bool is_connected_control_;  // {true} if control-connected to the end node.
+    bool is_floating_control_;   // {true} if control, but not control-connected
+                                 // to the end node.
+    Placement placement_;        // Whether the node is fixed, schedulable,
+                                 // coupled to another node, or not yet known.
+  };
+
+  Zone* zone_;
   Graph* graph_;
   Schedule* schedule_;
-  NodeVector branches_;
-  NodeVector calls_;
-  NodeVector deopts_;
-  NodeVector returns_;
-  NodeVector loops_and_merges_;
-  BasicBlockVector node_block_placement_;
-  IntVector unscheduled_uses_;
-  NodeVectorVector scheduled_nodes_;
-  NodeVector schedule_root_nodes_;
-  IntVector schedule_early_rpo_index_;
+  NodeVectorVector scheduled_nodes_;     // Per-block list of nodes in reverse.
+  NodeVector schedule_root_nodes_;       // Fixed root nodes seed the worklist.
+  ZoneQueue<Node*> schedule_queue_;      // Worklist of schedulable nodes.
+  ZoneVector<SchedulerData> node_data_;  // Per-node data for all nodes.
+  SpecialRPONumberer* special_rpo_;      // Special RPO numbering of blocks.
 
   Scheduler(Zone* zone, Graph* graph, Schedule* schedule);
 
-  int GetRPONumber(BasicBlock* block) {
-    DCHECK(block->rpo_number_ >= 0 &&
-           block->rpo_number_ < static_cast<int>(schedule_->rpo_order_.size()));
-    DCHECK(schedule_->rpo_order_[block->rpo_number_] == block);
-    return block->rpo_number_;
-  }
+  inline SchedulerData DefaultSchedulerData();
+  inline SchedulerData* GetData(Node* node);
 
-  void PrepareAuxiliaryNodeData();
-  void PrepareAuxiliaryBlockData();
+  Placement GetPlacement(Node* node);
+  void UpdatePlacement(Node* node, Placement placement);
 
-  friend class CreateBlockVisitor;
-  void CreateBlocks();
+  inline bool IsCoupledControlEdge(Node* node, int index);
+  void IncrementUnscheduledUseCount(Node* node, int index, Node* from);
+  void DecrementUnscheduledUseCount(Node* node, int index, Node* from);
 
-  void WireBlocks();
-
-  void AddPredecessorsForLoopsAndMerges();
-  void AddSuccessorsForBranches();
-  void AddSuccessorsForReturns();
-  void AddSuccessorsForCalls();
-  void AddSuccessorsForDeopts();
-
-  void GenerateImmediateDominatorTree();
   BasicBlock* GetCommonDominator(BasicBlock* b1, BasicBlock* b2);
 
-  friend class ScheduleEarlyNodeVisitor;
-  void ScheduleEarly();
+  // Phase 1: Build control-flow graph.
+  friend class CFGBuilder;
+  void BuildCFG();
 
+  // Phase 2: Compute special RPO and dominator tree.
+  friend class SpecialRPONumberer;
+  void ComputeSpecialRPONumbering();
+  void GenerateImmediateDominatorTree();
+
+  // Phase 3: Prepare use counts for nodes.
   friend class PrepareUsesVisitor;
   void PrepareUses();
 
+  // Phase 4: Schedule nodes early.
+  friend class ScheduleEarlyNodeVisitor;
+  void ScheduleEarly();
+
+  // Phase 5: Schedule nodes late.
   friend class ScheduleLateNodeVisitor;
   void ScheduleLate();
+
+  // Phase 6: Seal the final schedule.
+  void SealFinalSchedule();
+
+  void FuseFloatingControl(BasicBlock* block, Node* node);
+  void MovePlannedNodes(BasicBlock* from, BasicBlock* to);
 };
-}
-}
-}  // namespace v8::internal::compiler
+
+}  // namespace compiler
+}  // namespace internal
+}  // namespace v8
 
 #endif  // V8_COMPILER_SCHEDULER_H_

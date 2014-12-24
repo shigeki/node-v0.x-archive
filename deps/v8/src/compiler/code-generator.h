@@ -17,33 +17,34 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
+class Linkage;
+
 // Generates native code for a sequence of instructions.
-class CodeGenerator V8_FINAL : public GapResolver::Assembler {
+class CodeGenerator FINAL : public GapResolver::Assembler {
  public:
-  explicit CodeGenerator(InstructionSequence* code);
+  explicit CodeGenerator(Frame* frame, Linkage* linkage,
+                         InstructionSequence* code, CompilationInfo* info);
 
   // Generate native code.
   Handle<Code> GenerateCode();
 
   InstructionSequence* code() const { return code_; }
-  Frame* frame() const { return code()->frame(); }
-  Graph* graph() const { return code()->graph(); }
+  Frame* frame() const { return frame_; }
   Isolate* isolate() const { return zone()->isolate(); }
-  Linkage* linkage() const { return code()->linkage(); }
-  Schedule* schedule() const { return code()->schedule(); }
+  Linkage* linkage() const { return linkage_; }
+
+  Label* GetLabel(BasicBlock::RpoNumber rpo) { return &labels_[rpo.ToSize()]; }
 
  private:
   MacroAssembler* masm() { return &masm_; }
   GapResolver* resolver() { return &resolver_; }
   SafepointTableBuilder* safepoints() { return &safepoints_; }
   Zone* zone() const { return code()->zone(); }
+  CompilationInfo* info() const { return info_; }
 
   // Checks if {block} will appear directly after {current_block_} when
   // assembling code, in which case, a fall-through can be used.
-  bool IsNextInAssemblyOrder(const BasicBlock* block) const {
-    return block->rpo_number_ == (current_block_->rpo_number_ + 1) &&
-           block->deferred_ == current_block_->deferred_;
-  }
+  bool IsNextInAssemblyOrder(BasicBlock::RpoNumber block) const;
 
   // Record a safepoint with the given pointer map.
   void RecordSafepoint(PointerMap* pointers, Safepoint::Kind kind,
@@ -62,6 +63,8 @@ class CodeGenerator V8_FINAL : public GapResolver::Assembler {
   void AssembleArchBranch(Instruction* instr, FlagsCondition condition);
   void AssembleArchBoolean(Instruction* instr, FlagsCondition condition);
 
+  void AssembleDeoptimizerCall(int deoptimization_id);
+
   // Generates an architecture-specific, descriptor-specific prologue
   // to set up a stack frame.
   void AssemblePrologue();
@@ -75,68 +78,62 @@ class CodeGenerator V8_FINAL : public GapResolver::Assembler {
 
   // Interface used by the gap resolver to emit moves and swaps.
   virtual void AssembleMove(InstructionOperand* source,
-                            InstructionOperand* destination) V8_OVERRIDE;
+                            InstructionOperand* destination) OVERRIDE;
   virtual void AssembleSwap(InstructionOperand* source,
-                            InstructionOperand* destination) V8_OVERRIDE;
+                            InstructionOperand* destination) OVERRIDE;
 
   // ===========================================================================
   // Deoptimization table construction
-  void RecordLazyDeoptimizationEntry(Instruction* instr);
+  void AddSafepointAndDeopt(Instruction* instr);
   void PopulateDeoptimizationData(Handle<Code> code);
   int DefineDeoptimizationLiteral(Handle<Object> literal);
-  void BuildTranslation(Instruction* instr, int deoptimization_id);
+  FrameStateDescriptor* GetFrameStateDescriptor(Instruction* instr,
+                                                size_t frame_state_offset);
+  int BuildTranslation(Instruction* instr, int pc_offset,
+                       size_t frame_state_offset,
+                       OutputFrameStateCombine state_combine);
+  void BuildTranslationForFrameStateDescriptor(
+      FrameStateDescriptor* descriptor, Instruction* instr,
+      Translation* translation, size_t frame_state_offset,
+      OutputFrameStateCombine state_combine);
   void AddTranslationForOperand(Translation* translation, Instruction* instr,
-                                InstructionOperand* op);
+                                InstructionOperand* op, MachineType type);
   void AddNopForSmiCodeInlining();
-#if DEBUG
-  static bool IsNopForSmiCodeInlining(Handle<Code> code, int start_pc,
-                                      int end_pc);
-#endif  // DEBUG
+  void EnsureSpaceForLazyDeopt();
+  void MarkLazyDeoptSite();
+
   // ===========================================================================
-
-  class LazyDeoptimizationEntry V8_FINAL {
+  struct DeoptimizationState : ZoneObject {
    public:
-    LazyDeoptimizationEntry(int position_after_call, Label* continuation,
-                            Label* deoptimization)
-        : position_after_call_(position_after_call),
-          continuation_(continuation),
-          deoptimization_(deoptimization) {}
+    BailoutId bailout_id() const { return bailout_id_; }
+    int translation_id() const { return translation_id_; }
+    int pc_offset() const { return pc_offset_; }
 
-    int position_after_call() const { return position_after_call_; }
-    Label* continuation() const { return continuation_; }
-    Label* deoptimization() const { return deoptimization_; }
+    DeoptimizationState(BailoutId bailout_id, int translation_id, int pc_offset)
+        : bailout_id_(bailout_id),
+          translation_id_(translation_id),
+          pc_offset_(pc_offset) {}
 
    private:
-    int position_after_call_;
-    Label* continuation_;
-    Label* deoptimization_;
-  };
-
-  struct DeoptimizationState : ZoneObject {
+    BailoutId bailout_id_;
     int translation_id_;
-
-    explicit DeoptimizationState(int translation_id)
-        : translation_id_(translation_id) {}
+    int pc_offset_;
   };
 
-  typedef std::deque<LazyDeoptimizationEntry,
-                     zone_allocator<LazyDeoptimizationEntry> >
-      LazyDeoptimizationEntries;
-  typedef std::deque<DeoptimizationState*,
-                     zone_allocator<DeoptimizationState*> >
-      DeoptimizationStates;
-  typedef std::deque<Handle<Object>, zone_allocator<Handle<Object> > > Literals;
-
-  InstructionSequence* code_;
-  BasicBlock* current_block_;
+  Frame* const frame_;
+  Linkage* const linkage_;
+  InstructionSequence* const code_;
+  CompilationInfo* const info_;
+  Label* const labels_;
+  BasicBlock::RpoNumber current_block_;
   SourcePosition current_source_position_;
   MacroAssembler masm_;
   GapResolver resolver_;
   SafepointTableBuilder safepoints_;
-  LazyDeoptimizationEntries lazy_deoptimization_entries_;
-  DeoptimizationStates deoptimization_states_;
-  Literals deoptimization_literals_;
+  ZoneDeque<DeoptimizationState*> deoptimization_states_;
+  ZoneDeque<Handle<Object> > deoptimization_literals_;
   TranslationBuffer translations_;
+  int last_lazy_deopt_pc_;
 };
 
 }  // namespace compiler

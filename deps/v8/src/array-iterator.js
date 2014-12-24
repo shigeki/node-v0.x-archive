@@ -50,7 +50,7 @@ function ArrayIteratorIterator() {
 function ArrayIteratorNext() {
   var iterator = ToObject(this);
 
-  if (!HAS_PRIVATE(iterator, arrayIteratorObjectSymbol)) {
+  if (!HAS_DEFINED_PRIVATE(iterator, arrayIteratorNextIndexSymbol)) {
     throw MakeTypeError('incompatible_method_receiver',
                         ['Array Iterator.prototype.next']);
   }
@@ -112,6 +112,8 @@ function SetUpArrayIterator() {
   %FunctionSetName(ArrayIteratorIterator, '[Symbol.iterator]');
   %AddNamedProperty(ArrayIterator.prototype, symbolIterator,
                     ArrayIteratorIterator, DONT_ENUM);
+  %AddNamedProperty(ArrayIterator.prototype, symbolToStringTag,
+                    "Array Iterator", READ_ONLY | DONT_ENUM);
 }
 SetUpArrayIterator();
 
@@ -120,8 +122,8 @@ function ExtendArrayPrototype() {
   %CheckIsBootstrapping();
 
   InstallFunctions($Array.prototype, DONT_ENUM, $Array(
+    // No 'values' since it breaks webcompat: http://crbug.com/409858
     'entries', ArrayEntries,
-    'values', ArrayValues,
     'keys', ArrayKeys
   ));
 

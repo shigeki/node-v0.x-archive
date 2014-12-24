@@ -160,10 +160,16 @@ void Scope::SetDefaults(ScopeType scope_type,
   scope_inside_with_ = false;
   scope_contains_with_ = false;
   scope_calls_eval_ = false;
+  scope_uses_this_ = false;
+  scope_uses_arguments_ = false;
+  asm_module_ = false;
+  asm_function_ = outer_scope != NULL && outer_scope->asm_module_;
   // Inherit the strict mode from the parent scope.
   strict_mode_ = outer_scope != NULL ? outer_scope->strict_mode_ : SLOPPY;
   outer_scope_calls_sloppy_eval_ = false;
   inner_scope_calls_eval_ = false;
+  inner_scope_uses_this_ = false;
+  inner_scope_uses_arguments_ = false;
   force_eager_compilation_ = false;
   force_context_allocation_ = (outer_scope != NULL && !is_function_scope())
       ? outer_scope->has_forced_context_allocation() : false;
@@ -222,6 +228,8 @@ Scope* Scope::DeserializeScopeChain(Context* context, Scope* global_scope,
                                       Handle<ScopeInfo>(scope_info),
                                       global_scope->ast_value_factory_,
                                       zone);
+      if (scope_info->IsAsmFunction()) current_scope->asm_function_ = true;
+      if (scope_info->IsAsmModule()) current_scope->asm_module_ = true;
     } else if (context->IsBlockContext()) {
       ScopeInfo* scope_info = ScopeInfo::cast(context->extension());
       current_scope = new(zone) Scope(current_scope,
@@ -267,9 +275,7 @@ bool Scope::Analyze(CompilationInfo* info) {
 
   // Allocate the variables.
   {
-    // Passing NULL as AstValueFactory is ok, because AllocateVariables doesn't
-    // need to create new strings or values.
-    AstNodeFactory<AstNullVisitor> ast_node_factory(info->zone(), NULL);
+    AstNodeFactory<AstNullVisitor> ast_node_factory(info->ast_value_factory());
     if (!top->AllocateVariables(info, &ast_node_factory)) return false;
   }
 
@@ -776,6 +782,7 @@ static const char* Header(ScopeType scope_type) {
     case CATCH_SCOPE: return "catch";
     case BLOCK_SCOPE: return "block";
     case WITH_SCOPE: return "with";
+    case ARROW_SCOPE: return "arrow";
   }
   UNREACHABLE();
   return NULL;
@@ -882,6 +889,12 @@ void Scope::Print(int n) {
   if (scope_inside_with_) Indent(n1, "// scope inside 'with'\n");
   if (scope_contains_with_) Indent(n1, "// scope contains 'with'\n");
   if (scope_calls_eval_) Indent(n1, "// scope calls 'eval'\n");
+  if (scope_uses_this_) Indent(n1, "// scope uses 'this'\n");
+  if (scope_uses_arguments_) Indent(n1, "// scope uses 'arguments'\n");
+  if (inner_scope_uses_this_) Indent(n1, "// inner scope uses 'this'\n");
+  if (inner_scope_uses_arguments_) {
+    Indent(n1, "// inner scope uses 'arguments'\n");
+  }
   if (outer_scope_calls_sloppy_eval_) {
     Indent(n1, "// outer scope calls 'eval' in sloppy context\n");
   }
@@ -1028,7 +1041,7 @@ bool Scope::ResolveVariable(CompilationInfo* info,
 
   // If the proxy is already resolved there's nothing to do
   // (functions and consts may be resolved by the parser).
-  if (proxy->var() != NULL) return true;
+  if (proxy->is_resolved()) return true;
 
   // Otherwise, try to resolve the variable.
   BindingKind binding_kind;
@@ -1081,9 +1094,10 @@ bool Scope::ResolveVariable(CompilationInfo* info,
     Isolate* isolate = info->isolate();
     Factory* factory = isolate->factory();
     Handle<JSArray> array = factory->NewJSArray(0);
-    Handle<Object> result =
+    Handle<Object> error;
+    MaybeHandle<Object> maybe_error =
         factory->NewSyntaxError("harmony_const_assign", array);
-    isolate->Throw(*result, &location);
+    if (maybe_error.ToHandle(&error)) isolate->Throw(*error, &location);
     return false;
   }
 
@@ -1115,9 +1129,10 @@ bool Scope::ResolveVariable(CompilationInfo* info,
       Factory* factory = isolate->factory();
       Handle<JSArray> array = factory->NewJSArray(1);
       JSObject::SetElement(array, 0, var->name(), NONE, STRICT).Assert();
-      Handle<Object> result =
+      Handle<Object> error;
+      MaybeHandle<Object> maybe_error =
           factory->NewSyntaxError("module_type_error", array);
-      isolate->Throw(*result, &location);
+      if (maybe_error.ToHandle(&error)) isolate->Throw(*error, &location);
       return false;
     }
   }
@@ -1161,8 +1176,22 @@ void Scope::PropagateScopeInfo(bool outer_scope_calls_sloppy_eval ) {
     if (inner->scope_calls_eval_ || inner->inner_scope_calls_eval_) {
       inner_scope_calls_eval_ = true;
     }
+    // If the inner scope is an arrow function, propagate the flags tracking
+    // usage of this/arguments, but do not propagate them out from normal
+    // functions.
+    if (!inner->is_function_scope() || inner->is_arrow_scope()) {
+      if (inner->scope_uses_this_ || inner->inner_scope_uses_this_) {
+        inner_scope_uses_this_ = true;
+      }
+      if (inner->scope_uses_arguments_ || inner->inner_scope_uses_arguments_) {
+        inner_scope_uses_arguments_ = true;
+      }
+    }
     if (inner->force_eager_compilation_) {
       force_eager_compilation_ = true;
+    }
+    if (asm_module_ && inner->scope_type() == FUNCTION_SCOPE) {
+      inner->asm_function_ = true;
     }
   }
 }

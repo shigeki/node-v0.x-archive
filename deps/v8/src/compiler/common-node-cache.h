@@ -13,7 +13,7 @@ namespace internal {
 namespace compiler {
 
 // Bundles various caches for common nodes.
-class CommonNodeCache V8_FINAL : public ZoneObject {
+class CommonNodeCache FINAL : public ZoneObject {
  public:
   explicit CommonNodeCache(Zone* zone) : zone_(zone) {}
 
@@ -21,9 +21,13 @@ class CommonNodeCache V8_FINAL : public ZoneObject {
     return int32_constants_.Find(zone_, value);
   }
 
+  Node** FindInt64Constant(int64_t value) {
+    return int64_constants_.Find(zone_, value);
+  }
+
   Node** FindFloat64Constant(double value) {
     // We canonicalize double constants at the bit representation level.
-    return float64_constants_.Find(zone_, BitCast<int64_t>(value));
+    return float64_constants_.Find(zone_, bit_cast<int64_t>(value));
   }
 
   Node** FindExternalConstant(ExternalReference reference) {
@@ -32,20 +36,30 @@ class CommonNodeCache V8_FINAL : public ZoneObject {
 
   Node** FindNumberConstant(double value) {
     // We canonicalize double constants at the bit representation level.
-    return number_constants_.Find(zone_, BitCast<int64_t>(value));
+    return number_constants_.Find(zone_, bit_cast<int64_t>(value));
   }
 
   Zone* zone() const { return zone_; }
 
+  void GetCachedNodes(NodeVector* nodes) {
+    int32_constants_.GetCachedNodes(nodes);
+    int64_constants_.GetCachedNodes(nodes);
+    float64_constants_.GetCachedNodes(nodes);
+    external_constants_.GetCachedNodes(nodes);
+    number_constants_.GetCachedNodes(nodes);
+  }
+
  private:
   Int32NodeCache int32_constants_;
+  Int64NodeCache int64_constants_;
   Int64NodeCache float64_constants_;
   PtrNodeCache external_constants_;
   Int64NodeCache number_constants_;
   Zone* zone_;
 };
-}
-}
-}  // namespace v8::internal::compiler
+
+}  // namespace compiler
+}  // namespace internal
+}  // namespace v8
 
 #endif  // V8_COMPILER_COMMON_NODE_CACHE_H_

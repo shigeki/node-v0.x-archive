@@ -8,7 +8,6 @@
     'node_shared_v8%': 'false',
     'node_shared_zlib%': 'false',
     'node_shared_http_parser%': 'false',
-    'node_shared_cares%': 'false',
     'node_shared_libuv%': 'false',
     'node_use_openssl%': 'true',
     'node_shared_openssl%': 'false',
@@ -16,6 +15,7 @@
     'node_v8_options%': '',
     'library_files': [
       'src/node.js',
+      'lib/_debug_agent.js',
       'lib/_debugger.js',
       'lib/_linklist.js',
       'lib/assert.js',
@@ -64,9 +64,9 @@
       'lib/tty.js',
       'lib/url.js',
       'lib/util.js',
+      'lib/v8.js',
       'lib/vm.js',
       'lib/zlib.js',
-      'deps/debugger-agent/lib/_debugger_agent.js',
     ],
   },
 
@@ -77,7 +77,7 @@
 
       'dependencies': [
         'node_js2c#host',
-        'deps/debugger-agent/debugger-agent.gyp:debugger-agent',
+        'deps/cares/cares.gyp:cares'
       ],
 
       'include_dirs': [
@@ -88,6 +88,7 @@
       ],
 
       'sources': [
+        'src/debug-agent.cc',
         'src/async-wrap.cc',
         'src/fs_event_wrap.cc',
         'src/cares_wrap.cc',
@@ -102,6 +103,7 @@
         'src/node_main.cc',
         'src/node_os.cc',
         'src/node_v8.cc',
+        'src/node_v8_platform.cc',
         'src/node_stat_watcher.cc',
         'src/node_watchdog.cc',
         'src/node_zlib.cc',
@@ -123,6 +125,7 @@
         'src/async-wrap-inl.h',
         'src/base-object.h',
         'src/base-object-inl.h',
+        'src/debug-agent.h',
         'src/env.h',
         'src/env-inl.h',
         'src/handle_wrap.h',
@@ -310,10 +313,6 @@
           'dependencies': [ 'deps/http_parser/http_parser.gyp:http_parser' ],
         }],
 
-        [ 'node_shared_cares=="false"', {
-          'dependencies': [ 'deps/cares/cares.gyp:cares' ],
-        }],
-
         [ 'node_shared_libuv=="false"', {
           'dependencies': [ 'deps/uv/uv.gyp:libuv' ],
         }],
@@ -363,6 +362,12 @@
             # rather than gyp's preferred "solaris"
             'PLATFORM="sunos"',
           ],
+        }],
+        [ 'OS=="freebsd" or OS=="linux"', {
+          'ldflags': [ '-Wl,-z,noexecstack' ],
+        }],
+        [ 'OS=="sunos"', {
+          'ldflags': [ '-Wl,-M,/usr/lib/ld/map.noexstk' ],
         }],
         [
           'OS in "linux freebsd" and node_shared_v8=="false"', {
@@ -461,7 +466,7 @@
       'target_name': 'node_dtrace_header',
       'type': 'none',
       'conditions': [
-        [ 'node_use_dtrace=="true"', {
+        [ 'node_use_dtrace=="true" and OS!="linux"', {
           'actions': [
             {
               'action_name': 'node_dtrace_header',
@@ -471,7 +476,18 @@
                 '-o', '<@(_outputs)' ]
             }
           ]
-        } ]
+        } ],
+        [ 'node_use_dtrace=="true" and OS=="linux"', {
+          'actions': [
+            {
+              'action_name': 'node_dtrace_header',
+              'inputs': [ 'src/node_provider.d' ],
+              'outputs': [ '<(SHARED_INTERMEDIATE_DIR)/node_provider.h' ],
+              'action': [ 'dtrace', '-h', '-s', '<@(_inputs)',
+                '-o', '<@(_outputs)' ]
+            }
+          ]
+        } ],
       ]
     },
     {

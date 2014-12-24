@@ -45,6 +45,8 @@
 #include "src/base/cpu.h"
 #include "src/base/logging.h"
 #include "src/base/platform/platform.h"
+#include "src/base/sys-info.h"
+#include "src/basic-block-profiler.h"
 #include "src/d8-debug.h"
 #include "src/debug.h"
 #include "src/natives.h"
@@ -53,7 +55,12 @@
 
 #if !defined(_WIN32) && !defined(_WIN64)
 #include <unistd.h>  // NOLINT
-#endif
+#else
+#include <windows.h>  // NOLINT
+#if defined(_MSC_VER)
+#include <crtdbg.h>  // NOLINT
+#endif               // defined(_MSC_VER)
+#endif               // !defined(_WIN32) && !defined(_WIN64)
 
 #ifndef DCHECK
 #define DCHECK(condition) assert(condition)
@@ -170,33 +177,77 @@ const char* Shell::ToCString(const v8::String::Utf8Value& value) {
 }
 
 
+ScriptCompiler::CachedData* CompileForCachedData(
+    Local<String> source, Local<Value> name,
+    ScriptCompiler::CompileOptions compile_options) {
+  int source_length = source->Length();
+  uint16_t* source_buffer = new uint16_t[source_length];
+  source->Write(source_buffer, 0, source_length);
+  int name_length = 0;
+  uint16_t* name_buffer = NULL;
+  if (name->IsString()) {
+    Local<String> name_string = Local<String>::Cast(name);
+    name_length = name_string->Length();
+    name_buffer = new uint16_t[name_length];
+    name_string->Write(name_buffer, 0, name_length);
+  }
+  Isolate* temp_isolate = Isolate::New();
+  ScriptCompiler::CachedData* result = NULL;
+  {
+    Isolate::Scope isolate_scope(temp_isolate);
+    HandleScope handle_scope(temp_isolate);
+    Context::Scope context_scope(Context::New(temp_isolate));
+    Local<String> source_copy = v8::String::NewFromTwoByte(
+        temp_isolate, source_buffer, v8::String::kNormalString, source_length);
+    Local<Value> name_copy;
+    if (name_buffer) {
+      name_copy = v8::String::NewFromTwoByte(
+          temp_isolate, name_buffer, v8::String::kNormalString, name_length);
+    } else {
+      name_copy = v8::Undefined(temp_isolate);
+    }
+    ScriptCompiler::Source script_source(source_copy, ScriptOrigin(name_copy));
+    ScriptCompiler::CompileUnbound(temp_isolate, &script_source,
+                                   compile_options);
+    if (script_source.GetCachedData()) {
+      int length = script_source.GetCachedData()->length;
+      uint8_t* cache = new uint8_t[length];
+      memcpy(cache, script_source.GetCachedData()->data, length);
+      result = new ScriptCompiler::CachedData(
+          cache, length, ScriptCompiler::CachedData::BufferOwned);
+    }
+  }
+  temp_isolate->Dispose();
+  delete[] source_buffer;
+  delete[] name_buffer;
+  return result;
+}
+
+
 // Compile a string within the current v8 context.
 Local<UnboundScript> Shell::CompileString(
     Isolate* isolate, Local<String> source, Local<Value> name,
-    v8::ScriptCompiler::CompileOptions compile_options) {
+    ScriptCompiler::CompileOptions compile_options) {
   ScriptOrigin origin(name);
-  ScriptCompiler::Source script_source(source, origin);
-  Local<UnboundScript> script =
-      ScriptCompiler::CompileUnbound(isolate, &script_source, compile_options);
-
-  // Was caching requested & successful? Then compile again, now with cache.
-  if (script_source.GetCachedData()) {
-    if (compile_options == ScriptCompiler::kProduceCodeCache) {
-      compile_options = ScriptCompiler::kConsumeCodeCache;
-    } else if (compile_options == ScriptCompiler::kProduceParserCache) {
-      compile_options = ScriptCompiler::kConsumeParserCache;
-    } else {
-      DCHECK(false);  // A new compile option?
-    }
-    ScriptCompiler::Source cached_source(
-        source, origin, new v8::ScriptCompiler::CachedData(
-                            script_source.GetCachedData()->data,
-                            script_source.GetCachedData()->length,
-                            v8::ScriptCompiler::CachedData::BufferNotOwned));
-    script = ScriptCompiler::CompileUnbound(isolate, &cached_source,
-                                            compile_options);
+  if (compile_options == ScriptCompiler::kNoCompileOptions) {
+    ScriptCompiler::Source script_source(source, origin);
+    return ScriptCompiler::CompileUnbound(isolate, &script_source,
+                                          compile_options);
   }
-  return script;
+
+  ScriptCompiler::CachedData* data =
+      CompileForCachedData(source, name, compile_options);
+  ScriptCompiler::Source cached_source(source, origin, data);
+  if (compile_options == ScriptCompiler::kProduceCodeCache) {
+    compile_options = ScriptCompiler::kConsumeCodeCache;
+  } else if (compile_options == ScriptCompiler::kProduceParserCache) {
+    compile_options = ScriptCompiler::kConsumeParserCache;
+  } else {
+    DCHECK(false);  // A new compile option?
+  }
+  if (data == NULL) compile_options = ScriptCompiler::kNoCompileOptions;
+  return ScriptCompiler::CompileUnbound(isolate, &cached_source,
+                                        compile_options);
 }
 
 
@@ -332,7 +383,6 @@ void Shell::PerformanceNow(const v8::FunctionCallbackInfo<v8::Value>& args) {
     Isolate* v8_isolate = args.GetIsolate();
     i::Heap* heap = reinterpret_cast<i::Isolate*>(v8_isolate)->heap();
     args.GetReturnValue().Set(heap->synthetic_time());
-
   } else {
     base::TimeDelta delta =
         base::TimeTicks::HighResolutionNow() - kInitialTicks;
@@ -360,7 +410,7 @@ void Shell::RealmOwner(const v8::FunctionCallbackInfo<v8::Value>& args) {
     Throw(args.GetIsolate(), "Invalid argument");
     return;
   }
-  int index = data->RealmFind(args[0]->ToObject()->CreationContext());
+  int index = data->RealmFind(args[0]->ToObject(isolate)->CreationContext());
   if (index == -1) return;
   args.GetReturnValue().Set(index);
 }
@@ -430,7 +480,7 @@ void Shell::RealmEval(const v8::FunctionCallbackInfo<v8::Value>& args) {
     Throw(args.GetIsolate(), "Invalid argument");
     return;
   }
-  ScriptCompiler::Source script_source(args[1]->ToString());
+  ScriptCompiler::Source script_source(args[1]->ToString(isolate));
   Handle<UnboundScript> script = ScriptCompiler::CompileUnbound(
       isolate, &script_source);
   if (script.IsEmpty()) return;
@@ -476,7 +526,7 @@ void Shell::Write(const v8::FunctionCallbackInfo<v8::Value>& args) {
 
     // Explicitly catch potential exceptions in toString().
     v8::TryCatch try_catch;
-    Handle<String> str_obj = args[i]->ToString();
+    Handle<String> str_obj = args[i]->ToString(args.GetIsolate());
     if (try_catch.HasCaught()) {
       try_catch.ReThrow();
       return;
@@ -1529,13 +1579,13 @@ class ShellArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
 
 class MockArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
  public:
-  virtual void* Allocate(size_t) V8_OVERRIDE {
+  virtual void* Allocate(size_t) OVERRIDE {
     return malloc(0);
   }
-  virtual void* AllocateUninitialized(size_t length) V8_OVERRIDE {
+  virtual void* AllocateUninitialized(size_t length) OVERRIDE {
     return malloc(0);
   }
-  virtual void Free(void* p, size_t) V8_OVERRIDE {
+  virtual void Free(void* p, size_t) OVERRIDE {
     free(p);
   }
 };
@@ -1595,14 +1645,31 @@ class StartupDataHandler {
 
 
 int Shell::Main(int argc, char* argv[]) {
+#if (defined(_WIN32) || defined(_WIN64))
+  UINT new_flags =
+      SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX;
+  UINT existing_flags = SetErrorMode(new_flags);
+  SetErrorMode(existing_flags | new_flags);
+#if defined(_MSC_VER)
+  _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG | _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
+  _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_DEBUG | _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+  _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_DEBUG | _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+  _set_error_mode(_OUT_TO_STDERR);
+#endif  // defined(_MSC_VER)
+#endif  // defined(_WIN32) || defined(_WIN64)
   if (!SetOptions(argc, argv)) return 1;
   v8::V8::InitializeICU(options.icu_data_file);
   v8::Platform* platform = v8::platform::CreateDefaultPlatform();
   v8::V8::InitializePlatform(platform);
+  v8::V8::Initialize();
 #ifdef V8_USE_EXTERNAL_STARTUP_DATA
   StartupDataHandler startup_data(options.natives_blob, options.snapshot_blob);
 #endif
   SetFlagsFromString("--trace-hydrogen-file=hydrogen.cfg");
+  SetFlagsFromString("--trace-turbo-cfg-file=turbo.cfg");
   SetFlagsFromString("--redirect-code-traces-to=code.asm");
   ShellArrayBufferAllocator array_buffer_allocator;
   MockArrayBufferAllocator mock_arraybuffer_allocator;
@@ -1612,27 +1679,26 @@ int Shell::Main(int argc, char* argv[]) {
     v8::V8::SetArrayBufferAllocator(&array_buffer_allocator);
   }
   int result = 0;
-  Isolate* isolate = Isolate::New();
-#ifndef V8_SHARED
-  v8::ResourceConstraints constraints;
-  constraints.ConfigureDefaults(base::OS::TotalPhysicalMemory(),
-                                base::OS::MaxVirtualMemory(),
-                                base::OS::NumberOfProcessorsOnline());
-  v8::SetResourceConstraints(isolate, &constraints);
+  Isolate::CreateParams create_params;
+#if !defined(V8_SHARED) && defined(ENABLE_GDB_JIT_INTERFACE)
+  if (i::FLAG_gdbjit) {
+    create_params.code_event_handler = i::GDBJITInterface::EventHandler;
+  }
 #endif
+#ifdef ENABLE_VTUNE_JIT_INTERFACE
+  create_params.code_event_handler = vTune::GetVtuneCodeEventHandler();
+#endif
+#ifndef V8_SHARED
+  create_params.constraints.ConfigureDefaults(
+      base::SysInfo::AmountOfPhysicalMemory(),
+      base::SysInfo::AmountOfVirtualMemory(),
+      base::SysInfo::NumberOfProcessors());
+#endif
+  Isolate* isolate = Isolate::New(create_params);
   DumbLineEditor dumb_line_editor(isolate);
   {
     Isolate::Scope scope(isolate);
     Initialize(isolate);
-#if !defined(V8_SHARED) && defined(ENABLE_GDB_JIT_INTERFACE)
-    if (i::FLAG_gdbjit) {
-      v8::V8::SetJitCodeEventHandler(v8::kJitCodeEventDefault,
-                                     i::GDBJITInterface::EventHandler);
-    }
-#endif
-#ifdef ENABLE_VTUNE_JIT_INTERFACE
-    vTune::InitializeVtuneForV8();
-#endif
     PerIsolateData data(isolate);
     InitializeDebugger(isolate);
 
@@ -1680,6 +1746,14 @@ int Shell::Main(int argc, char* argv[]) {
       RunShell(isolate);
     }
   }
+#ifndef V8_SHARED
+  // Dump basic block profiling data.
+  if (i::BasicBlockProfiler* profiler =
+          reinterpret_cast<i::Isolate*>(isolate)->basic_block_profiler()) {
+    i::OFStream os(stdout);
+    os << *profiler;
+  }
+#endif  // !V8_SHARED
   isolate->Dispose();
   V8::Dispose();
   V8::ShutdownPlatform();

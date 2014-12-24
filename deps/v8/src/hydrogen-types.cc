@@ -42,7 +42,10 @@ HType HType::FromType<HeapType>(Handle<HeapType> type);
 HType HType::FromValue(Handle<Object> value) {
   if (value->IsSmi()) return HType::Smi();
   if (value->IsNull()) return HType::Null();
-  if (value->IsHeapNumber()) return HType::HeapNumber();
+  if (value->IsHeapNumber()) {
+    double n = Handle<v8::internal::HeapNumber>::cast(value)->value();
+    return IsSmiDouble(n) ? HType::Smi() : HType::HeapNumber();
+  }
   if (value->IsString()) return HType::String();
   if (value->IsBoolean()) return HType::Boolean();
   if (value->IsUndefined()) return HType::Undefined();
@@ -53,7 +56,7 @@ HType HType::FromValue(Handle<Object> value) {
 }
 
 
-OStream& operator<<(OStream& os, const HType& t) {
+std::ostream& operator<<(std::ostream& os, const HType& t) {
   // Note: The c1visualizer syntax for locals allows only a sequence of the
   // following characters: A-Za-z0-9_-|:
   switch (t.kind_) {

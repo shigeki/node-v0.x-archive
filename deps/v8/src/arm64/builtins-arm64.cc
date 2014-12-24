@@ -10,8 +10,7 @@
 #include "src/debug.h"
 #include "src/deoptimizer.h"
 #include "src/full-codegen.h"
-#include "src/runtime.h"
-#include "src/stub-cache.h"
+#include "src/runtime/runtime.h"
 
 namespace v8 {
 namespace internal {
@@ -157,7 +156,7 @@ void Builtins::Generate_StringConstructCode(MacroAssembler* masm) {
   __ Cbz(argc, &no_arguments);
   // First args = sp[(argc - 1) * 8].
   __ Sub(argc, argc, 1);
-  __ Claim(argc, kXRegSize);
+  __ Drop(argc, kXRegSize);
   // jssp now point to args[0], load and drop args[0] + receiver.
   Register arg = argc;
   __ Ldr(arg, MemOperand(jssp, 2 * kPointerSize, PostIndex));
@@ -781,8 +780,8 @@ void Builtins::Generate_JSConstructEntryTrampoline(MacroAssembler* masm) {
 }
 
 
-void Builtins::Generate_CompileUnoptimized(MacroAssembler* masm) {
-  CallRuntimePassFunction(masm, Runtime::kCompileUnoptimized);
+void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
+  CallRuntimePassFunction(masm, Runtime::kCompileLazy);
   GenerateTailCallToReturnedCode(masm);
 }
 

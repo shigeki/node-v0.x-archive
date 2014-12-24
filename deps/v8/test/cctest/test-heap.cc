@@ -34,8 +34,8 @@
 #include "src/execution.h"
 #include "src/factory.h"
 #include "src/global-handles.h"
+#include "src/ic/ic.h"
 #include "src/macro-assembler.h"
-#include "src/stub-cache.h"
 #include "test/cctest/cctest.h"
 
 using namespace v8::internal;
@@ -185,7 +185,7 @@ TEST(HeapObjects) {
   CHECK(factory->nan_value()->IsNumber());
   CHECK(std::isnan(factory->nan_value()->Number()));
 
-  Handle<String> s = factory->NewStringFromStaticAscii("fisk hest ");
+  Handle<String> s = factory->NewStringFromStaticChars("fisk hest ");
   CHECK(s->IsString());
   CHECK_EQ(10, s->length());
 
@@ -341,7 +341,7 @@ TEST(GlobalHandles) {
   {
     HandleScope scope(isolate);
 
-    Handle<Object> i = factory->NewStringFromStaticAscii("fisk");
+    Handle<Object> i = factory->NewStringFromStaticChars("fisk");
     Handle<Object> u = factory->NewNumber(1.12344);
 
     h1 = global_handles->Create(*i);
@@ -396,7 +396,7 @@ TEST(WeakGlobalHandlesScavenge) {
   {
     HandleScope scope(isolate);
 
-    Handle<Object> i = factory->NewStringFromStaticAscii("fisk");
+    Handle<Object> i = factory->NewStringFromStaticChars("fisk");
     Handle<Object> u = factory->NewNumber(1.12344);
 
     h1 = global_handles->Create(*i);
@@ -438,7 +438,7 @@ TEST(WeakGlobalHandlesMark) {
   {
     HandleScope scope(isolate);
 
-    Handle<Object> i = factory->NewStringFromStaticAscii("fisk");
+    Handle<Object> i = factory->NewStringFromStaticChars("fisk");
     Handle<Object> u = factory->NewNumber(1.12344);
 
     h1 = global_handles->Create(*i);
@@ -484,7 +484,7 @@ TEST(DeleteWeakGlobalHandle) {
   {
     HandleScope scope(isolate);
 
-    Handle<Object> i = factory->NewStringFromStaticAscii("fisk");
+    Handle<Object> i = factory->NewStringFromStaticChars("fisk");
     h = global_handles->Create(*i);
   }
 
@@ -870,33 +870,34 @@ TEST(StringAllocation) {
   const unsigned char chars[] = { 0xe5, 0xa4, 0xa7 };
   for (int length = 0; length < 100; length++) {
     v8::HandleScope scope(CcTest::isolate());
-    char* non_ascii = NewArray<char>(3 * length + 1);
-    char* ascii = NewArray<char>(length + 1);
-    non_ascii[3 * length] = 0;
-    ascii[length] = 0;
+    char* non_one_byte = NewArray<char>(3 * length + 1);
+    char* one_byte = NewArray<char>(length + 1);
+    non_one_byte[3 * length] = 0;
+    one_byte[length] = 0;
     for (int i = 0; i < length; i++) {
-      ascii[i] = 'a';
-      non_ascii[3 * i] = chars[0];
-      non_ascii[3 * i + 1] = chars[1];
-      non_ascii[3 * i + 2] = chars[2];
+      one_byte[i] = 'a';
+      non_one_byte[3 * i] = chars[0];
+      non_one_byte[3 * i + 1] = chars[1];
+      non_one_byte[3 * i + 2] = chars[2];
     }
-    Handle<String> non_ascii_sym =
-        factory->InternalizeUtf8String(
-            Vector<const char>(non_ascii, 3 * length));
-    CHECK_EQ(length, non_ascii_sym->length());
-    Handle<String> ascii_sym =
-        factory->InternalizeOneByteString(OneByteVector(ascii, length));
-    CHECK_EQ(length, ascii_sym->length());
-    Handle<String> non_ascii_str = factory->NewStringFromUtf8(
-        Vector<const char>(non_ascii, 3 * length)).ToHandleChecked();
-    non_ascii_str->Hash();
-    CHECK_EQ(length, non_ascii_str->length());
-    Handle<String> ascii_str = factory->NewStringFromUtf8(
-        Vector<const char>(ascii, length)).ToHandleChecked();
-    ascii_str->Hash();
-    CHECK_EQ(length, ascii_str->length());
-    DeleteArray(non_ascii);
-    DeleteArray(ascii);
+    Handle<String> non_one_byte_sym = factory->InternalizeUtf8String(
+        Vector<const char>(non_one_byte, 3 * length));
+    CHECK_EQ(length, non_one_byte_sym->length());
+    Handle<String> one_byte_sym =
+        factory->InternalizeOneByteString(OneByteVector(one_byte, length));
+    CHECK_EQ(length, one_byte_sym->length());
+    Handle<String> non_one_byte_str =
+        factory->NewStringFromUtf8(Vector<const char>(non_one_byte, 3 * length))
+            .ToHandleChecked();
+    non_one_byte_str->Hash();
+    CHECK_EQ(length, non_one_byte_str->length());
+    Handle<String> one_byte_str =
+        factory->NewStringFromUtf8(Vector<const char>(one_byte, length))
+            .ToHandleChecked();
+    one_byte_str->Hash();
+    CHECK_EQ(length, one_byte_str->length());
+    DeleteArray(non_one_byte);
+    DeleteArray(one_byte);
   }
 }
 
@@ -934,10 +935,9 @@ TEST(Iteration) {
                                                 TENURED);
 
   // Allocate a small string to OLD_DATA_SPACE and NEW_SPACE
+  objs[next_objs_index++] = factory->NewStringFromStaticChars("abcdefghij");
   objs[next_objs_index++] =
-      factory->NewStringFromStaticAscii("abcdefghij");
-  objs[next_objs_index++] =
-      factory->NewStringFromStaticAscii("abcdefghij", TENURED);
+      factory->NewStringFromStaticChars("abcdefghij", TENURED);
 
   // Allocate a large string (for large object space).
   int large_size = Page::kMaxRegularHeapObjectSize + 1;
@@ -992,11 +992,8 @@ TEST(Regression39128) {
   // that region dirty marks are updated correctly.
 
   // Step 1: prepare a map for the object.  We add 1 inobject property to it.
-  Handle<JSFunction> object_ctor(
-      CcTest::i_isolate()->native_context()->object_function());
-  CHECK(object_ctor->has_initial_map());
   // Create a map with single inobject property.
-  Handle<Map> my_map = Map::Create(object_ctor, 1);
+  Handle<Map> my_map = Map::Create(CcTest::i_isolate(), 1);
   int n_properties = my_map->inobject_properties();
   CHECK_GT(n_properties, 0);
 
@@ -1052,53 +1049,61 @@ TEST(Regression39128) {
 }
 
 
-TEST(TestCodeFlushing) {
+UNINITIALIZED_TEST(TestCodeFlushing) {
   // If we do not flush code this test is invalid.
   if (!FLAG_flush_code) return;
   i::FLAG_allow_natives_syntax = true;
   i::FLAG_optimize_for_size = false;
-  CcTest::InitializeVM();
-  Isolate* isolate = CcTest::i_isolate();
-  Factory* factory = isolate->factory();
-  v8::HandleScope scope(CcTest::isolate());
-  const char* source = "function foo() {"
-                       "  var x = 42;"
-                       "  var y = 42;"
-                       "  var z = x + y;"
-                       "};"
-                       "foo()";
-  Handle<String> foo_name = factory->InternalizeUtf8String("foo");
+  v8::Isolate* isolate = v8::Isolate::New();
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  isolate->Enter();
+  Factory* factory = i_isolate->factory();
+  {
+    v8::HandleScope scope(isolate);
+    v8::Context::New(isolate)->Enter();
+    const char* source =
+        "function foo() {"
+        "  var x = 42;"
+        "  var y = 42;"
+        "  var z = x + y;"
+        "};"
+        "foo()";
+    Handle<String> foo_name = factory->InternalizeUtf8String("foo");
 
-  // This compile will add the code to the compilation cache.
-  { v8::HandleScope scope(CcTest::isolate());
-    CompileRun(source);
+    // This compile will add the code to the compilation cache.
+    {
+      v8::HandleScope scope(isolate);
+      CompileRun(source);
+    }
+
+    // Check function is compiled.
+    Handle<Object> func_value = Object::GetProperty(i_isolate->global_object(),
+                                                    foo_name).ToHandleChecked();
+    CHECK(func_value->IsJSFunction());
+    Handle<JSFunction> function = Handle<JSFunction>::cast(func_value);
+    CHECK(function->shared()->is_compiled());
+
+    // The code will survive at least two GCs.
+    i_isolate->heap()->CollectAllGarbage(Heap::kAbortIncrementalMarkingMask);
+    i_isolate->heap()->CollectAllGarbage(Heap::kAbortIncrementalMarkingMask);
+    CHECK(function->shared()->is_compiled());
+
+    // Simulate several GCs that use full marking.
+    const int kAgingThreshold = 6;
+    for (int i = 0; i < kAgingThreshold; i++) {
+      i_isolate->heap()->CollectAllGarbage(Heap::kAbortIncrementalMarkingMask);
+    }
+
+    // foo should no longer be in the compilation cache
+    CHECK(!function->shared()->is_compiled() || function->IsOptimized());
+    CHECK(!function->is_compiled() || function->IsOptimized());
+    // Call foo to get it recompiled.
+    CompileRun("foo()");
+    CHECK(function->shared()->is_compiled());
+    CHECK(function->is_compiled());
   }
-
-  // Check function is compiled.
-  Handle<Object> func_value = Object::GetProperty(
-      CcTest::i_isolate()->global_object(), foo_name).ToHandleChecked();
-  CHECK(func_value->IsJSFunction());
-  Handle<JSFunction> function = Handle<JSFunction>::cast(func_value);
-  CHECK(function->shared()->is_compiled());
-
-  // The code will survive at least two GCs.
-  CcTest::heap()->CollectAllGarbage(Heap::kAbortIncrementalMarkingMask);
-  CcTest::heap()->CollectAllGarbage(Heap::kAbortIncrementalMarkingMask);
-  CHECK(function->shared()->is_compiled());
-
-  // Simulate several GCs that use full marking.
-  const int kAgingThreshold = 6;
-  for (int i = 0; i < kAgingThreshold; i++) {
-    CcTest::heap()->CollectAllGarbage(Heap::kAbortIncrementalMarkingMask);
-  }
-
-  // foo should no longer be in the compilation cache
-  CHECK(!function->shared()->is_compiled() || function->IsOptimized());
-  CHECK(!function->is_compiled() || function->IsOptimized());
-  // Call foo to get it recompiled.
-  CompileRun("foo()");
-  CHECK(function->shared()->is_compiled());
-  CHECK(function->is_compiled());
+  isolate->Exit();
+  isolate->Dispose();
 }
 
 
@@ -1367,6 +1372,98 @@ TEST(TestCodeFlushingIncrementalAbort) {
   heap->CollectAllGarbage(Heap::kNoGCFlags);
   CHECK(function->shared()->is_compiled() || !function->IsOptimized());
   CHECK(function->is_compiled() || !function->IsOptimized());
+}
+
+
+TEST(CompilationCacheCachingBehavior) {
+  // If we do not flush code, or have the compilation cache turned off, this
+  // test is invalid.
+  if (!FLAG_flush_code || !FLAG_flush_code_incrementally ||
+      !FLAG_compilation_cache) {
+    return;
+  }
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  Factory* factory = isolate->factory();
+  Heap* heap = isolate->heap();
+  CompilationCache* compilation_cache = isolate->compilation_cache();
+
+  v8::HandleScope scope(CcTest::isolate());
+  const char* raw_source =
+      "function foo() {"
+      "  var x = 42;"
+      "  var y = 42;"
+      "  var z = x + y;"
+      "};"
+      "foo()";
+  Handle<String> source = factory->InternalizeUtf8String(raw_source);
+  Handle<Context> native_context = isolate->native_context();
+
+  {
+    v8::HandleScope scope(CcTest::isolate());
+    CompileRun(raw_source);
+  }
+
+  // On first compilation, only a hash is inserted in the code cache. We can't
+  // find that value.
+  MaybeHandle<SharedFunctionInfo> info = compilation_cache->LookupScript(
+      source, Handle<Object>(), 0, 0, true, native_context);
+  CHECK(info.is_null());
+
+  {
+    v8::HandleScope scope(CcTest::isolate());
+    CompileRun(raw_source);
+  }
+
+  // On second compilation, the hash is replaced by a real cache entry mapping
+  // the source to the shared function info containing the code.
+  info = compilation_cache->LookupScript(source, Handle<Object>(), 0, 0, true,
+                                         native_context);
+  CHECK(!info.is_null());
+
+  heap->CollectAllGarbage(Heap::kNoGCFlags);
+
+  // On second compilation, the hash is replaced by a real cache entry mapping
+  // the source to the shared function info containing the code.
+  info = compilation_cache->LookupScript(source, Handle<Object>(), 0, 0, true,
+                                         native_context);
+  CHECK(!info.is_null());
+
+  while (!info.ToHandleChecked()->code()->IsOld()) {
+    info.ToHandleChecked()->code()->MakeOlder(NO_MARKING_PARITY);
+  }
+
+  heap->CollectAllGarbage(Heap::kNoGCFlags);
+  // Ensure code aging cleared the entry from the cache.
+  info = compilation_cache->LookupScript(source, Handle<Object>(), 0, 0, true,
+                                         native_context);
+  CHECK(info.is_null());
+
+  {
+    v8::HandleScope scope(CcTest::isolate());
+    CompileRun(raw_source);
+  }
+
+  // On first compilation, only a hash is inserted in the code cache. We can't
+  // find that value.
+  info = compilation_cache->LookupScript(source, Handle<Object>(), 0, 0, true,
+                                         native_context);
+  CHECK(info.is_null());
+
+  for (int i = 0; i < CompilationCacheTable::kHashGenerations; i++) {
+    compilation_cache->MarkCompactPrologue();
+  }
+
+  {
+    v8::HandleScope scope(CcTest::isolate());
+    CompileRun(raw_source);
+  }
+
+  // If we aged the cache before caching the script, ensure that we didn't cache
+  // on next compilation.
+  info = compilation_cache->LookupScript(source, Handle<Object>(), 0, 0, true,
+                                         native_context);
+  CHECK(info.is_null());
 }
 
 
@@ -1684,7 +1781,7 @@ static void FillUpNewSpace(NewSpace* new_space) {
   Factory* factory = isolate->factory();
   HandleScope scope(isolate);
   AlwaysAllocateScope always_allocate(isolate);
-  intptr_t available = new_space->EffectiveCapacity() - new_space->Size();
+  intptr_t available = new_space->Capacity() - new_space->Size();
   intptr_t number_of_fillers = (available / FixedArray::SizeFor(32)) - 1;
   for (intptr_t i = 0; i < number_of_fillers; i++) {
     CHECK(heap->InNewSpace(*factory->NewFixedArray(32, NOT_TENURED)));
@@ -1707,20 +1804,20 @@ TEST(GrowAndShrinkNewSpace) {
 
   // Explicitly growing should double the space capacity.
   intptr_t old_capacity, new_capacity;
-  old_capacity = new_space->Capacity();
+  old_capacity = new_space->TotalCapacity();
   new_space->Grow();
-  new_capacity = new_space->Capacity();
+  new_capacity = new_space->TotalCapacity();
   CHECK(2 * old_capacity == new_capacity);
 
-  old_capacity = new_space->Capacity();
+  old_capacity = new_space->TotalCapacity();
   FillUpNewSpace(new_space);
-  new_capacity = new_space->Capacity();
+  new_capacity = new_space->TotalCapacity();
   CHECK(old_capacity == new_capacity);
 
   // Explicitly shrinking should not affect space capacity.
-  old_capacity = new_space->Capacity();
+  old_capacity = new_space->TotalCapacity();
   new_space->Shrink();
-  new_capacity = new_space->Capacity();
+  new_capacity = new_space->TotalCapacity();
   CHECK(old_capacity == new_capacity);
 
   // Let the scavenger empty the new space.
@@ -1728,17 +1825,17 @@ TEST(GrowAndShrinkNewSpace) {
   CHECK_LE(new_space->Size(), old_capacity);
 
   // Explicitly shrinking should halve the space capacity.
-  old_capacity = new_space->Capacity();
+  old_capacity = new_space->TotalCapacity();
   new_space->Shrink();
-  new_capacity = new_space->Capacity();
+  new_capacity = new_space->TotalCapacity();
   CHECK(old_capacity == 2 * new_capacity);
 
   // Consecutive shrinking should not affect space capacity.
-  old_capacity = new_space->Capacity();
+  old_capacity = new_space->TotalCapacity();
   new_space->Shrink();
   new_space->Shrink();
   new_space->Shrink();
-  new_capacity = new_space->Capacity();
+  new_capacity = new_space->TotalCapacity();
   CHECK(old_capacity == new_capacity);
 }
 
@@ -1757,13 +1854,13 @@ TEST(CollectingAllAvailableGarbageShrinksNewSpace) {
   v8::HandleScope scope(CcTest::isolate());
   NewSpace* new_space = heap->new_space();
   intptr_t old_capacity, new_capacity;
-  old_capacity = new_space->Capacity();
+  old_capacity = new_space->TotalCapacity();
   new_space->Grow();
-  new_capacity = new_space->Capacity();
+  new_capacity = new_space->TotalCapacity();
   CHECK(2 * old_capacity == new_capacity);
   FillUpNewSpace(new_space);
   heap->CollectAllAvailableGarbage();
-  new_capacity = new_space->Capacity();
+  new_capacity = new_space->TotalCapacity();
   CHECK(old_capacity == new_capacity);
 }
 
@@ -2175,6 +2272,48 @@ TEST(ResetSharedFunctionInfoCountersDuringMarkSweep) {
   CHECK_EQ(CcTest::heap()->global_ic_age(), f->shared()->ic_age());
   CHECK_EQ(0, f->shared()->opt_count());
   CHECK_EQ(0, f->shared()->code()->profiler_ticks());
+}
+
+
+TEST(IdleNotificationFinishMarking) {
+  i::FLAG_allow_natives_syntax = true;
+  CcTest::InitializeVM();
+  SimulateFullSpace(CcTest::heap()->old_pointer_space());
+  IncrementalMarking* marking = CcTest::heap()->incremental_marking();
+  marking->Abort();
+  marking->Start();
+
+  CHECK_EQ(CcTest::heap()->gc_count(), 0);
+
+  // TODO(hpayer): We cannot write proper unit test right now for heap.
+  // The ideal test would call kMaxIdleMarkingDelayCounter to test the
+  // marking delay counter.
+
+  // Perform a huge incremental marking step but don't complete marking.
+  intptr_t bytes_processed = 0;
+  do {
+    bytes_processed =
+        marking->Step(1 * MB, IncrementalMarking::NO_GC_VIA_STACK_GUARD,
+                      IncrementalMarking::FORCE_MARKING,
+                      IncrementalMarking::DO_NOT_FORCE_COMPLETION);
+    CHECK(!marking->IsIdleMarkingDelayCounterLimitReached());
+  } while (bytes_processed);
+
+  // The next invocations of incremental marking are not going to complete
+  // marking
+  // since the completion threshold is not reached
+  for (size_t i = 0; i < IncrementalMarking::kMaxIdleMarkingDelayCounter - 2;
+       i++) {
+    marking->Step(1 * MB, IncrementalMarking::NO_GC_VIA_STACK_GUARD,
+                  IncrementalMarking::FORCE_MARKING,
+                  IncrementalMarking::DO_NOT_FORCE_COMPLETION);
+    CHECK(!marking->IsIdleMarkingDelayCounterLimitReached());
+  }
+
+  // The next idle notification has to finish incremental marking.
+  const int kLongIdleTime = 1000000;
+  CcTest::isolate()->IdleNotification(kLongIdleTime);
+  CHECK_EQ(CcTest::heap()->gc_count(), 1);
 }
 
 
@@ -2801,6 +2940,7 @@ TEST(TransitionArrayShrinksDuringAllocToZero) {
              "root = new F");
   root = GetByName("root");
   AddPropertyTo(2, root, "funny");
+  CcTest::heap()->CollectGarbage(NEW_SPACE);
 
   // Count number of live transitions after marking.  Note that one transition
   // is left, because 'o' still holds an instance of one transition target.
@@ -2827,6 +2967,7 @@ TEST(TransitionArrayShrinksDuringAllocToOne) {
 
   root = GetByName("root");
   AddPropertyTo(2, root, "funny");
+  CcTest::heap()->CollectGarbage(NEW_SPACE);
 
   // Count number of live transitions after marking.  Note that one transition
   // is left, because 'o' still holds an instance of one transition target.
@@ -2853,6 +2994,7 @@ TEST(TransitionArrayShrinksDuringAllocToOnePropertyFound) {
 
   root = GetByName("root");
   AddPropertyTo(0, root, "prop9");
+  CcTest::i_isolate()->heap()->CollectGarbage(OLD_POINTER_SPACE);
 
   // Count number of live transitions after marking.  Note that one transition
   // is left, because 'o' still holds an instance of one transition target.
@@ -3070,7 +3212,7 @@ TEST(PrintSharedFunctionInfo) {
 
   OFStream os(stdout);
   g->shared()->Print(os);
-  os << endl;
+  os << std::endl;
 }
 #endif  // OBJECT_PRINT
 
@@ -3139,23 +3281,21 @@ TEST(IncrementalMarkingClearsTypeFeedbackInfo) {
           *v8::Handle<v8::Function>::Cast(
               CcTest::global()->Get(v8_str("f"))));
 
-  Handle<FixedArray> feedback_vector(f->shared()->feedback_vector());
+  Handle<TypeFeedbackVector> feedback_vector(f->shared()->feedback_vector());
 
-  int expected_length = FLAG_vector_ics ? 4 : 2;
-  CHECK_EQ(expected_length, feedback_vector->length());
-  for (int i = 0; i < expected_length; i++) {
-    if ((i % 2) == 1) {
-      CHECK(feedback_vector->get(i)->IsJSFunction());
-    }
+  int expected_slots = 2;
+  CHECK_EQ(expected_slots, feedback_vector->ICSlots());
+  for (int i = 0; i < expected_slots; i++) {
+    CHECK(feedback_vector->Get(FeedbackVectorICSlot(i))->IsJSFunction());
   }
 
   SimulateIncrementalMarking(CcTest::heap());
   CcTest::heap()->CollectAllGarbage(Heap::kNoGCFlags);
 
-  CHECK_EQ(expected_length, feedback_vector->length());
-  for (int i = 0; i < expected_length; i++) {
-    CHECK_EQ(feedback_vector->get(i),
-             *TypeFeedbackInfo::UninitializedSentinel(CcTest::i_isolate()));
+  CHECK_EQ(expected_slots, feedback_vector->ICSlots());
+  for (int i = 0; i < expected_slots; i++) {
+    CHECK_EQ(feedback_vector->Get(FeedbackVectorICSlot(i)),
+             *TypeFeedbackVector::UninitializedSentinel(CcTest::i_isolate()));
   }
 }
 
@@ -3275,7 +3415,7 @@ TEST(IncrementalMarkingClearsPolymorphicIC) {
 }
 
 
-class SourceResource: public v8::String::ExternalAsciiStringResource {
+class SourceResource : public v8::String::ExternalOneByteStringResource {
  public:
   explicit SourceResource(const char* data)
     : data_(data), length_(strlen(data)) { }
@@ -3297,26 +3437,28 @@ class SourceResource: public v8::String::ExternalAsciiStringResource {
 };
 
 
-void ReleaseStackTraceDataTest(const char* source, const char* accessor) {
+void ReleaseStackTraceDataTest(v8::Isolate* isolate, const char* source,
+                               const char* accessor) {
   // Test that the data retained by the Error.stack accessor is released
   // after the first time the accessor is fired.  We use external string
   // to check whether the data is being released since the external string
   // resource's callback is fired when the external string is GC'ed.
-  v8::HandleScope scope(CcTest::isolate());
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  v8::HandleScope scope(isolate);
   SourceResource* resource = new SourceResource(i::StrDup(source));
   {
-    v8::HandleScope scope(CcTest::isolate());
+    v8::HandleScope scope(isolate);
     v8::Handle<v8::String> source_string =
-        v8::String::NewExternal(CcTest::isolate(), resource);
-    CcTest::heap()->CollectAllAvailableGarbage();
+        v8::String::NewExternal(isolate, resource);
+    i_isolate->heap()->CollectAllAvailableGarbage();
     v8::Script::Compile(source_string)->Run();
     CHECK(!resource->IsDisposed());
   }
-  // CcTest::heap()->CollectAllAvailableGarbage();
+  // i_isolate->heap()->CollectAllAvailableGarbage();
   CHECK(!resource->IsDisposed());
 
   CompileRun(accessor);
-  CcTest::heap()->CollectAllAvailableGarbage();
+  i_isolate->heap()->CollectAllAvailableGarbage();
 
   // External source has been released.
   CHECK(resource->IsDisposed());
@@ -3324,7 +3466,7 @@ void ReleaseStackTraceDataTest(const char* source, const char* accessor) {
 }
 
 
-TEST(ReleaseStackTraceData) {
+UNINITIALIZED_TEST(ReleaseStackTraceData) {
   if (i::FLAG_always_opt) {
     // TODO(ulan): Remove this once the memory leak via code_next_link is fixed.
     // See: https://codereview.chromium.org/181833004/
@@ -3332,46 +3474,52 @@ TEST(ReleaseStackTraceData) {
   }
   FLAG_use_ic = false;  // ICs retain objects.
   FLAG_concurrent_recompilation = false;
-  CcTest::InitializeVM();
-  static const char* source1 = "var error = null;            "
-  /* Normal Error */           "try {                        "
-                               "  throw new Error();         "
-                               "} catch (e) {                "
-                               "  error = e;                 "
-                               "}                            ";
-  static const char* source2 = "var error = null;            "
-  /* Stack overflow */         "try {                        "
-                               "  (function f() { f(); })(); "
-                               "} catch (e) {                "
-                               "  error = e;                 "
-                               "}                            ";
-  static const char* source3 = "var error = null;            "
-  /* Normal Error */           "try {                        "
-  /* as prototype */           "  throw new Error();         "
-                               "} catch (e) {                "
-                               "  error = {};                "
-                               "  error.__proto__ = e;       "
-                               "}                            ";
-  static const char* source4 = "var error = null;            "
-  /* Stack overflow */         "try {                        "
-  /* as prototype   */         "  (function f() { f(); })(); "
-                               "} catch (e) {                "
-                               "  error = {};                "
-                               "  error.__proto__ = e;       "
-                               "}                            ";
-  static const char* getter = "error.stack";
-  static const char* setter = "error.stack = 0";
+  v8::Isolate* isolate = v8::Isolate::New();
+  {
+    v8::Isolate::Scope isolate_scope(isolate);
+    v8::HandleScope handle_scope(isolate);
+    v8::Context::New(isolate)->Enter();
+    static const char* source1 = "var error = null;            "
+    /* Normal Error */           "try {                        "
+                                 "  throw new Error();         "
+                                 "} catch (e) {                "
+                                 "  error = e;                 "
+                                 "}                            ";
+    static const char* source2 = "var error = null;            "
+    /* Stack overflow */         "try {                        "
+                                 "  (function f() { f(); })(); "
+                                 "} catch (e) {                "
+                                 "  error = e;                 "
+                                 "}                            ";
+    static const char* source3 = "var error = null;            "
+    /* Normal Error */           "try {                        "
+    /* as prototype */           "  throw new Error();         "
+                                 "} catch (e) {                "
+                                 "  error = {};                "
+                                 "  error.__proto__ = e;       "
+                                 "}                            ";
+    static const char* source4 = "var error = null;            "
+    /* Stack overflow */         "try {                        "
+    /* as prototype   */         "  (function f() { f(); })(); "
+                                 "} catch (e) {                "
+                                 "  error = {};                "
+                                 "  error.__proto__ = e;       "
+                                 "}                            ";
+    static const char* getter = "error.stack";
+    static const char* setter = "error.stack = 0";
 
-  ReleaseStackTraceDataTest(source1, setter);
-  ReleaseStackTraceDataTest(source2, setter);
-  // We do not test source3 and source4 with setter, since the setter is
-  // supposed to (untypically) write to the receiver, not the holder.  This is
-  // to emulate the behavior of a data property.
+    ReleaseStackTraceDataTest(isolate, source1, setter);
+    ReleaseStackTraceDataTest(isolate, source2, setter);
+    // We do not test source3 and source4 with setter, since the setter is
+    // supposed to (untypically) write to the receiver, not the holder.  This is
+    // to emulate the behavior of a data property.
 
-  ReleaseStackTraceDataTest(source1, getter);
-  ReleaseStackTraceDataTest(source2, getter);
-  ReleaseStackTraceDataTest(source3, getter);
-  ReleaseStackTraceDataTest(source4, getter);
+    ReleaseStackTraceDataTest(isolate, source1, getter);
+    ReleaseStackTraceDataTest(isolate, source2, getter);
+    ReleaseStackTraceDataTest(isolate, source3, getter);
+    ReleaseStackTraceDataTest(isolate, source4, getter);
+  }
+  isolate->Dispose();
 }
 
 
@@ -4050,6 +4198,7 @@ static int GetCodeChainLength(Code* code) {
 
 TEST(NextCodeLinkIsWeak) {
   i::FLAG_allow_natives_syntax = true;
+  i::FLAG_turbo_deoptimization = true;
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   v8::internal::Heap* heap = CcTest::heap();
@@ -4226,6 +4375,72 @@ TEST(WeakMapInMonomorphicCompareNilIC) {
 }
 
 
+TEST(WeakCell) {
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  v8::internal::Heap* heap = CcTest::heap();
+  v8::internal::Factory* factory = isolate->factory();
+
+  HandleScope outer_scope(isolate);
+  Handle<WeakCell> weak_cell1;
+  {
+    HandleScope inner_scope(isolate);
+    Handle<HeapObject> value = factory->NewFixedArray(1, NOT_TENURED);
+    weak_cell1 = inner_scope.CloseAndEscape(factory->NewWeakCell(value));
+  }
+
+  Handle<FixedArray> survivor = factory->NewFixedArray(1, NOT_TENURED);
+  Handle<WeakCell> weak_cell2;
+  {
+    HandleScope inner_scope(isolate);
+    weak_cell2 = inner_scope.CloseAndEscape(factory->NewWeakCell(survivor));
+  }
+  CHECK(weak_cell1->value()->IsFixedArray());
+  CHECK_EQ(*survivor, weak_cell2->value());
+  heap->CollectGarbage(NEW_SPACE);
+  CHECK(weak_cell1->value()->IsFixedArray());
+  CHECK_EQ(*survivor, weak_cell2->value());
+  heap->CollectGarbage(NEW_SPACE);
+  CHECK(weak_cell1->value()->IsFixedArray());
+  CHECK_EQ(*survivor, weak_cell2->value());
+  heap->CollectAllAvailableGarbage();
+  CHECK(weak_cell1->cleared());
+  CHECK_EQ(*survivor, weak_cell2->value());
+}
+
+
+TEST(WeakCellsWithIncrementalMarking) {
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  v8::internal::Heap* heap = CcTest::heap();
+  v8::internal::Factory* factory = isolate->factory();
+
+  const int N = 16;
+  HandleScope outer_scope(isolate);
+  Handle<FixedArray> survivor = factory->NewFixedArray(1, NOT_TENURED);
+  Handle<WeakCell> weak_cells[N];
+
+  for (int i = 0; i < N; i++) {
+    HandleScope inner_scope(isolate);
+    Handle<HeapObject> value =
+        i == 0 ? survivor : factory->NewFixedArray(1, NOT_TENURED);
+    Handle<WeakCell> weak_cell = factory->NewWeakCell(value);
+    CHECK(weak_cell->value()->IsFixedArray());
+    IncrementalMarking* marking = heap->incremental_marking();
+    if (marking->IsStopped()) marking->Start();
+    marking->Step(128, IncrementalMarking::NO_GC_VIA_STACK_GUARD);
+    heap->CollectGarbage(NEW_SPACE);
+    CHECK(weak_cell->value()->IsFixedArray());
+    weak_cells[i] = inner_scope.CloseAndEscape(weak_cell);
+  }
+  heap->CollectAllGarbage(Heap::kNoGCFlags);
+  CHECK_EQ(*survivor, weak_cells[0]->value());
+  for (int i = 1; i < N; i++) {
+    CHECK(weak_cells[i]->cleared());
+  }
+}
+
+
 #ifdef DEBUG
 TEST(AddInstructionChangesNewSpacePromotion) {
   i::FLAG_allow_natives_syntax = true;
@@ -4348,78 +4563,90 @@ TEST(ArrayShiftSweeping) {
 }
 
 
-TEST(PromotionQueue) {
+UNINITIALIZED_TEST(PromotionQueue) {
   i::FLAG_expose_gc = true;
   i::FLAG_max_semi_space_size = 2;
-  CcTest::InitializeVM();
-  v8::HandleScope scope(CcTest::isolate());
-  Isolate* isolate = CcTest::i_isolate();
-  Heap* heap = isolate->heap();
-  NewSpace* new_space = heap->new_space();
+  v8::Isolate* isolate = v8::Isolate::New();
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  {
+    v8::Isolate::Scope isolate_scope(isolate);
+    v8::HandleScope handle_scope(isolate);
+    v8::Context::New(isolate)->Enter();
+    Heap* heap = i_isolate->heap();
+    NewSpace* new_space = heap->new_space();
 
-  // In this test we will try to overwrite the promotion queue which is at the
-  // end of to-space. To actually make that possible, we need at least two
-  // semi-space pages and take advantage of fragementation.
-  // (1) Grow semi-space to two pages.
-  // (2) Create a few small long living objects and call the scavenger to
-  // move them to the other semi-space.
-  // (3) Create a huge object, i.e., remainder of first semi-space page and
-  // create another huge object which should be of maximum allocatable memory
-  // size of the second semi-space page.
-  // (4) Call the scavenger again.
-  // What will happen is: the scavenger will promote the objects created in (2)
-  // and will create promotion queue entries at the end of the second
-  // semi-space page during the next scavenge when it promotes the objects to
-  // the old generation. The first allocation of (3) will fill up the first
-  // semi-space page. The second allocation in (3) will not fit into the first
-  // semi-space page, but it will overwrite the promotion queue which are in
-  // the second semi-space page. If the right guards are in place, the promotion
-  // queue will be evacuated in that case.
+    // In this test we will try to overwrite the promotion queue which is at the
+    // end of to-space. To actually make that possible, we need at least two
+    // semi-space pages and take advantage of fragmentation.
+    // (1) Grow semi-space to two pages.
+    // (2) Create a few small long living objects and call the scavenger to
+    // move them to the other semi-space.
+    // (3) Create a huge object, i.e., remainder of first semi-space page and
+    // create another huge object which should be of maximum allocatable memory
+    // size of the second semi-space page.
+    // (4) Call the scavenger again.
+    // What will happen is: the scavenger will promote the objects created in
+    // (2) and will create promotion queue entries at the end of the second
+    // semi-space page during the next scavenge when it promotes the objects to
+    // the old generation. The first allocation of (3) will fill up the first
+    // semi-space page. The second allocation in (3) will not fit into the
+    // first semi-space page, but it will overwrite the promotion queue which
+    // are in the second semi-space page. If the right guards are in place, the
+    // promotion queue will be evacuated in that case.
 
-  // Grow the semi-space to two pages to make semi-space copy overwrite the
-  // promotion queue, which will be at the end of the second page.
-  intptr_t old_capacity = new_space->Capacity();
-  new_space->Grow();
-  CHECK(new_space->IsAtMaximumCapacity());
-  CHECK(2 * old_capacity == new_space->Capacity());
+    // Grow the semi-space to two pages to make semi-space copy overwrite the
+    // promotion queue, which will be at the end of the second page.
+    intptr_t old_capacity = new_space->TotalCapacity();
 
-  // Call the scavenger two times to get an empty new space
-  heap->CollectGarbage(NEW_SPACE);
-  heap->CollectGarbage(NEW_SPACE);
+    // If we are in a low memory config, we can't grow to two pages and we can't
+    // run this test. This also means the issue we are testing cannot arise, as
+    // there is no fragmentation.
+    if (new_space->IsAtMaximumCapacity()) return;
 
-  // First create a few objects which will survive a scavenge, and will get
-  // promoted to the old generation later on. These objects will create
-  // promotion queue entries at the end of the second semi-space page.
-  const int number_handles = 12;
-  Handle<FixedArray> handles[number_handles];
-  for (int i = 0; i < number_handles; i++) {
-    handles[i] = isolate->factory()->NewFixedArray(1, NOT_TENURED);
+    new_space->Grow();
+    CHECK(new_space->IsAtMaximumCapacity());
+    CHECK(2 * old_capacity == new_space->TotalCapacity());
+
+    // Call the scavenger two times to get an empty new space
+    heap->CollectGarbage(NEW_SPACE);
+    heap->CollectGarbage(NEW_SPACE);
+
+    // First create a few objects which will survive a scavenge, and will get
+    // promoted to the old generation later on. These objects will create
+    // promotion queue entries at the end of the second semi-space page.
+    const int number_handles = 12;
+    Handle<FixedArray> handles[number_handles];
+    for (int i = 0; i < number_handles; i++) {
+      handles[i] = i_isolate->factory()->NewFixedArray(1, NOT_TENURED);
+    }
+    heap->CollectGarbage(NEW_SPACE);
+
+    // Create the first huge object which will exactly fit the first semi-space
+    // page.
+    int new_linear_size =
+        static_cast<int>(*heap->new_space()->allocation_limit_address() -
+                         *heap->new_space()->allocation_top_address());
+    int length = new_linear_size / kPointerSize - FixedArray::kHeaderSize;
+    Handle<FixedArray> first =
+        i_isolate->factory()->NewFixedArray(length, NOT_TENURED);
+    CHECK(heap->InNewSpace(*first));
+
+    // Create the second huge object of maximum allocatable second semi-space
+    // page size.
+    new_linear_size =
+        static_cast<int>(*heap->new_space()->allocation_limit_address() -
+                         *heap->new_space()->allocation_top_address());
+    length = Page::kMaxRegularHeapObjectSize / kPointerSize -
+             FixedArray::kHeaderSize;
+    Handle<FixedArray> second =
+        i_isolate->factory()->NewFixedArray(length, NOT_TENURED);
+    CHECK(heap->InNewSpace(*second));
+
+    // This scavenge will corrupt memory if the promotion queue is not
+    // evacuated.
+    heap->CollectGarbage(NEW_SPACE);
   }
-  heap->CollectGarbage(NEW_SPACE);
-
-  // Create the first huge object which will exactly fit the first semi-space
-  // page.
-  int new_linear_size = static_cast<int>(
-      *heap->new_space()->allocation_limit_address() -
-          *heap->new_space()->allocation_top_address());
-  int length = new_linear_size / kPointerSize - FixedArray::kHeaderSize;
-  Handle<FixedArray> first =
-    isolate->factory()->NewFixedArray(length, NOT_TENURED);
-  CHECK(heap->InNewSpace(*first));
-
-  // Create the second huge object of maximum allocatable second semi-space
-  // page size.
-  new_linear_size = static_cast<int>(
-      *heap->new_space()->allocation_limit_address() -
-          *heap->new_space()->allocation_top_address());
-  length = Page::kMaxRegularHeapObjectSize / kPointerSize -
-      FixedArray::kHeaderSize;
-  Handle<FixedArray> second =
-      isolate->factory()->NewFixedArray(length, NOT_TENURED);
-  CHECK(heap->InNewSpace(*second));
-
-  // This scavenge will corrupt memory if the promotion queue is not evacuated.
-  heap->CollectGarbage(NEW_SPACE);
+  isolate->Dispose();
 }
 
 
@@ -4431,9 +4658,9 @@ TEST(Regress388880) {
   Factory* factory = isolate->factory();
   Heap* heap = isolate->heap();
 
-  Handle<Map> map1 = Map::Create(isolate->object_function(), 1);
+  Handle<Map> map1 = Map::Create(isolate, 1);
   Handle<Map> map2 =
-      Map::CopyWithField(map1, factory->NewStringFromStaticAscii("foo"),
+      Map::CopyWithField(map1, factory->NewStringFromStaticChars("foo"),
                          HeapType::Any(isolate), NONE, Representation::Tagged(),
                          OMIT_TRANSITION).ToHandleChecked();
 
@@ -4472,6 +4699,46 @@ TEST(Regress388880) {
   // Now everything is set up for crashing in JSObject::MigrateFastToFast()
   // when it calls heap->AdjustLiveBytes(...).
   JSObject::MigrateToMap(o, map2);
+}
+
+
+TEST(Regress3631) {
+  i::FLAG_expose_gc = true;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
+  Isolate* isolate = CcTest::i_isolate();
+  Heap* heap = isolate->heap();
+  IncrementalMarking* marking = CcTest::heap()->incremental_marking();
+  v8::Local<v8::Value> result = CompileRun(
+      "var weak_map = new WeakMap();"
+      "var future_keys = [];"
+      "for (var i = 0; i < 50; i++) {"
+      "  var key = {'k' : i + 0.1};"
+      "  weak_map.set(key, 1);"
+      "  future_keys.push({'x' : i + 0.2});"
+      "}"
+      "weak_map");
+  if (marking->IsStopped()) {
+    marking->Start();
+  }
+  // Incrementally mark the backing store.
+  Handle<JSObject> obj =
+      v8::Utils::OpenHandle(*v8::Handle<v8::Object>::Cast(result));
+  Handle<JSWeakCollection> weak_map(reinterpret_cast<JSWeakCollection*>(*obj));
+  while (!Marking::IsBlack(
+             Marking::MarkBitFrom(HeapObject::cast(weak_map->table()))) &&
+         !marking->IsStopped()) {
+    marking->Step(MB, IncrementalMarking::NO_GC_VIA_STACK_GUARD);
+  }
+  // Stash the backing store in a handle.
+  Handle<Object> save(weak_map->table(), isolate);
+  // The following line will update the backing store.
+  CompileRun(
+      "for (var i = 0; i < 50; i++) {"
+      "  weak_map.set(future_keys[i], i);"
+      "}");
+  heap->incremental_marking()->set_should_hurry(true);
+  heap->CollectGarbage(OLD_POINTER_SPACE);
 }
 
 

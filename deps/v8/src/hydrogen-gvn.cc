@@ -9,7 +9,7 @@
 namespace v8 {
 namespace internal {
 
-class HInstructionMap V8_FINAL : public ZoneObject {
+class HInstructionMap FINAL : public ZoneObject {
  public:
   HInstructionMap(Zone* zone, SideEffectsTracker* side_effects_tracker)
       : array_size_(0),
@@ -70,7 +70,7 @@ class HInstructionMap V8_FINAL : public ZoneObject {
 };
 
 
-class HSideEffectMap V8_FINAL BASE_EMBEDDED {
+class HSideEffectMap FINAL BASE_EMBEDDED {
  public:
   HSideEffectMap();
   explicit HSideEffectMap(HSideEffectMap* other);
@@ -400,7 +400,7 @@ SideEffects SideEffectsTracker::ComputeDependsOn(HInstruction* instr) {
 }
 
 
-OStream& operator<<(OStream& os, const TrackedEffects& te) {
+std::ostream& operator<<(std::ostream& os, const TrackedEffects& te) {
   SideEffectsTracker* t = te.tracker;
   const char* separator = "";
   os << "[";
@@ -450,7 +450,7 @@ bool SideEffectsTracker::ComputeGlobalVar(Unique<Cell> cell, int* index) {
     if (FLAG_trace_gvn) {
       OFStream os(stdout);
       os << "Tracking global var [" << *cell.handle() << "] "
-         << "(mapped to index " << num_global_vars_ << ")" << endl;
+         << "(mapped to index " << num_global_vars_ << ")" << std::endl;
     }
     *index = num_global_vars_;
     global_vars_[num_global_vars_++] = cell;
@@ -472,7 +472,7 @@ bool SideEffectsTracker::ComputeInobjectField(HObjectAccess access,
     if (FLAG_trace_gvn) {
       OFStream os(stdout);
       os << "Tracking inobject field access " << access << " (mapped to index "
-         << num_inobject_fields_ << ")" << endl;
+         << num_inobject_fields_ << ")" << std::endl;
     }
     *index = num_inobject_fields_;
     inobject_fields_[num_inobject_fields_++] = access;
@@ -567,7 +567,7 @@ void HGlobalValueNumberingPhase::LoopInvariantCodeMotion() {
       if (FLAG_trace_gvn) {
         OFStream os(stdout);
         os << "Try loop invariant motion for " << *block << " changes "
-           << Print(side_effects) << endl;
+           << Print(side_effects) << std::endl;
       }
       HBasicBlock* last = block->loop_information()->GetLastBackEdge();
       for (int j = block->block_id(); j <= last->block_id(); ++j) {
@@ -586,7 +586,7 @@ void HGlobalValueNumberingPhase::ProcessLoopBlock(
   if (FLAG_trace_gvn) {
     OFStream os(stdout);
     os << "Loop invariant code motion for " << *block << " depends on "
-       << Print(loop_kills) << endl;
+       << Print(loop_kills) << std::endl;
   }
   HInstruction* instr = block->first();
   while (instr != NULL) {
@@ -599,7 +599,7 @@ void HGlobalValueNumberingPhase::ProcessLoopBlock(
         os << "Checking instruction i" << instr->id() << " ("
            << instr->Mnemonic() << ") changes " << Print(changes)
            << ", depends on " << Print(depends_on) << ". Loop changes "
-           << Print(loop_kills) << endl;
+           << Print(loop_kills) << std::endl;
       }
       bool can_hoist = !depends_on.ContainsAnyOf(loop_kills);
       if (can_hoist && !graph()->use_optimistic_licm()) {
@@ -836,7 +836,7 @@ void HGlobalValueNumberingPhase::AnalyzeGraph() {
         if (FLAG_trace_gvn) {
           OFStream os(stdout);
           os << "Instruction i" << instr->id() << " changes " << Print(changes)
-             << endl;
+             << std::endl;
         }
       }
       if (instr->CheckFlag(HValue::kUseGVN) &&

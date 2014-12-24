@@ -106,36 +106,14 @@ ENDLOCAL
 if defined nobuild goto sign
 
 @rem Look for Visual Studio 2013
-if not defined VS120COMNTOOLS goto vc-set-2012
-if not exist "%VS120COMNTOOLS%\..\..\vc\vcvarsall.bat" goto vc-set-2012
+if not defined VS120COMNTOOLS goto msbuild-not-found
+if not exist "%VS120COMNTOOLS%\..\..\vc\vcvarsall.bat" goto msbuild-not-found
 if "%VCVARS_VER%" NEQ "120" (
   call "%VS120COMNTOOLS%\..\..\vc\vcvarsall.bat"
   SET VCVARS_VER=120
 )
 if not defined VCINSTALLDIR goto msbuild-not-found
 set GYP_MSVS_VERSION=2013
-goto msbuild-found
-
-:vc-set-2012
-@rem Look for Visual Studio 2012
-if not defined VS110COMNTOOLS goto vc-set-2010
-if not exist "%VS110COMNTOOLS%\..\..\vc\vcvarsall.bat" goto vc-set-2010
-if "%VCVARS_VER%" NEQ "110" (
-  call "%VS110COMNTOOLS%\..\..\vc\vcvarsall.bat"
-  SET VCVARS_VER=110
-)
-if not defined VCINSTALLDIR goto msbuild-not-found
-set GYP_MSVS_VERSION=2012
-goto msbuild-found
-
-:vc-set-2010
-if not defined VS100COMNTOOLS goto msbuild-not-found
-if not exist "%VS100COMNTOOLS%\..\..\vc\vcvarsall.bat" goto msbuild-not-found
-if "%VCVARS_VER%" NEQ "100" (
-  call "%VS100COMNTOOLS%\..\..\vc\vcvarsall.bat"
-  SET VCVARS_VER=100
-)
-if not defined VCINSTALLDIR goto msbuild-not-found
 goto msbuild-found
 
 :msbuild-not-found
@@ -185,10 +163,10 @@ if "%test%"=="" goto exit
 if "%config%"=="Debug" set test_args=--mode=debug
 if "%config%"=="Release" set test_args=--mode=release
 
-if "%test%"=="test" set test_args=%test_args% simple message
+if "%test%"=="test" set test_args=%test_args% sequential parallel message -J
 if "%test%"=="test-internet" set test_args=%test_args% internet
 if "%test%"=="test-pummel" set test_args=%test_args% pummel
-if "%test%"=="test-simple" set test_args=%test_args% simple
+if "%test%"=="test-simple" set test_args=%test_args% sequential parallel
 if "%test%"=="test-message" set test_args=%test_args% message
 if "%test%"=="test-gc" set test_args=%test_args% gc
 if "%test%"=="test-all" set test_args=%test_args%

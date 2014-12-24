@@ -15,7 +15,7 @@ namespace compiler {
 
 template <class T>
 NodeAuxData<T>::NodeAuxData(Zone* zone)
-    : aux_data_(ZoneAllocator(zone)) {}
+    : aux_data_(zone) {}
 
 
 template <class T>
@@ -29,7 +29,7 @@ void NodeAuxData<T>::Set(Node* node, const T& data) {
 
 
 template <class T>
-T NodeAuxData<T>::Get(Node* node) {
+T NodeAuxData<T>::Get(Node* node) const {
   int id = node->id();
   if (id >= static_cast<int>(aux_data_.size())) {
     return T();

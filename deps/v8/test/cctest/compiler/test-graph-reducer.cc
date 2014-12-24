@@ -21,15 +21,15 @@ const uint8_t OPCODE_C0 = 30;
 const uint8_t OPCODE_C1 = 31;
 const uint8_t OPCODE_C2 = 32;
 
-static SimpleOperator OPA0(OPCODE_A0, Operator::kNoWrite, 0, 0, "opa0");
-static SimpleOperator OPA1(OPCODE_A1, Operator::kNoWrite, 1, 0, "opa1");
-static SimpleOperator OPA2(OPCODE_A2, Operator::kNoWrite, 2, 0, "opa2");
-static SimpleOperator OPB0(OPCODE_B0, Operator::kNoWrite, 0, 0, "opa0");
-static SimpleOperator OPB1(OPCODE_B1, Operator::kNoWrite, 1, 0, "opa1");
-static SimpleOperator OPB2(OPCODE_B2, Operator::kNoWrite, 2, 0, "opa2");
-static SimpleOperator OPC0(OPCODE_C0, Operator::kNoWrite, 0, 0, "opc0");
-static SimpleOperator OPC1(OPCODE_C1, Operator::kNoWrite, 1, 0, "opc1");
-static SimpleOperator OPC2(OPCODE_C2, Operator::kNoWrite, 2, 0, "opc2");
+static Operator OPA0(OPCODE_A0, Operator::kNoWrite, "opa0", 0, 0, 0, 0, 0, 0);
+static Operator OPA1(OPCODE_A1, Operator::kNoWrite, "opa1", 1, 0, 0, 0, 0, 0);
+static Operator OPA2(OPCODE_A2, Operator::kNoWrite, "opa2", 2, 0, 0, 0, 0, 0);
+static Operator OPB0(OPCODE_B0, Operator::kNoWrite, "opa0", 0, 0, 0, 0, 0, 0);
+static Operator OPB1(OPCODE_B1, Operator::kNoWrite, "opa1", 1, 0, 0, 0, 0, 0);
+static Operator OPB2(OPCODE_B2, Operator::kNoWrite, "opa2", 2, 0, 0, 0, 0, 0);
+static Operator OPC0(OPCODE_C0, Operator::kNoWrite, "opc0", 0, 0, 0, 0, 0, 0);
+static Operator OPC1(OPCODE_C1, Operator::kNoWrite, "opc1", 1, 0, 0, 0, 0, 0);
+static Operator OPC2(OPCODE_C2, Operator::kNoWrite, "opc2", 2, 0, 0, 0, 0, 0);
 
 
 // Replaces all "A" operators with "B" operators without creating new nodes.
@@ -102,10 +102,10 @@ class InPlaceBCReducer : public Reducer {
 
 
 // Wraps all "OPA0" nodes in "OPB1" operators by allocating new nodes.
-class A0Wrapper V8_FINAL : public Reducer {
+class A0Wrapper FINAL : public Reducer {
  public:
   explicit A0Wrapper(Graph* graph) : graph_(graph) {}
-  virtual Reduction Reduce(Node* node) V8_OVERRIDE {
+  virtual Reduction Reduce(Node* node) OVERRIDE {
     switch (node->op()->opcode()) {
       case OPCODE_A0:
         CHECK_EQ(0, node->InputCount());
@@ -118,10 +118,10 @@ class A0Wrapper V8_FINAL : public Reducer {
 
 
 // Wraps all "OPB0" nodes in two "OPC1" operators by allocating new nodes.
-class B0Wrapper V8_FINAL : public Reducer {
+class B0Wrapper FINAL : public Reducer {
  public:
   explicit B0Wrapper(Graph* graph) : graph_(graph) {}
-  virtual Reduction Reduce(Node* node) V8_OVERRIDE {
+  virtual Reduction Reduce(Node* node) OVERRIDE {
     switch (node->op()->opcode()) {
       case OPCODE_B0:
         CHECK_EQ(0, node->InputCount());
@@ -470,9 +470,9 @@ TEST(ReduceForward1) {
     reducer.ReduceGraph();
     CHECK_EQ(before, graph.NodeCount());
     CHECK_EQ(&OPB0, n1->op());
-    CHECK_EQ(&OPB1, n2->op());
+    CHECK(n2->IsDead());
     CHECK_EQ(n1, end->InputAt(0));
-    CHECK_EQ(&OPB1, n3->op());
+    CHECK(n3->IsDead());
     CHECK_EQ(n1, end->InputAt(0));
     CHECK_EQ(&OPB2, end->op());
     CHECK_EQ(0, n2->UseCount());
@@ -620,42 +620,4 @@ TEST(Order) {
       CHECK_EQ(n1, end->InputAt(0));
     }
   }
-}
-
-
-// Tests that a reducer is only applied once.
-class OneTimeReducer : public Reducer {
- public:
-  OneTimeReducer(Reducer* reducer, Zone* zone)
-      : reducer_(reducer),
-        nodes_(NodeSet::key_compare(), NodeSet::allocator_type(zone)) {}
-  virtual Reduction Reduce(Node* node) {
-    CHECK_EQ(0, static_cast<int>(nodes_.count(node)));
-    nodes_.insert(node);
-    return reducer_->Reduce(node);
-  }
-  Reducer* reducer_;
-  NodeSet nodes_;
-};
-
-
-TEST(OneTimeReduce1) {
-  GraphTester graph;
-
-  Node* n1 = graph.NewNode(&OPA0);
-  Node* end = graph.NewNode(&OPA1, n1);
-  graph.SetEnd(end);
-
-  GraphReducer reducer(&graph);
-  InPlaceABReducer r;
-  OneTimeReducer once(&r, graph.zone());
-  reducer.AddReducer(&once);
-
-  // Tests A* => B* with in-place updates. Should only be applied once.
-  int before = graph.NodeCount();
-  reducer.ReduceGraph();
-  CHECK_EQ(before, graph.NodeCount());
-  CHECK_EQ(&OPB0, n1->op());
-  CHECK_EQ(&OPB1, end->op());
-  CHECK_EQ(n1, end->InputAt(0));
 }

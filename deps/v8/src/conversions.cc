@@ -211,7 +211,7 @@ char* DoubleToFixedCString(double value, int f) {
   // use the non-fixed conversion routine.
   if (abs_value >= kFirstNonFixed) {
     char arr[100];
-    Vector<char> buffer(arr, ARRAY_SIZE(arr));
+    Vector<char> buffer(arr, arraysize(arr));
     return StrDup(DoubleToCString(value, buffer));
   }
 
@@ -483,19 +483,21 @@ char* DoubleToRadixCString(double value, int radix) {
 }
 
 
-double StringToDouble(UnicodeCache* unicode_cache,
-                      String* string,
-                      int flags,
-                      double empty_string_val) {
-  DisallowHeapAllocation no_gc;
-  String::FlatContent flat = string->GetFlatContent();
-  // ECMA-262 section 15.1.2.3, empty string is NaN
-  if (flat.IsAscii()) {
-    return StringToDouble(
-        unicode_cache, flat.ToOneByteVector(), flags, empty_string_val);
-  } else {
-    return StringToDouble(
-        unicode_cache, flat.ToUC16Vector(), flags, empty_string_val);
+double StringToDouble(UnicodeCache* unicode_cache, Handle<String> string,
+                      int flags, double empty_string_val) {
+  Handle<String> flattened = String::Flatten(string);
+  {
+    DisallowHeapAllocation no_gc;
+    String::FlatContent flat = flattened->GetFlatContent();
+    DCHECK(flat.IsFlat());
+    // ECMA-262 section 15.1.2.3, empty string is NaN
+    if (flat.IsOneByte()) {
+      return StringToDouble(unicode_cache, flat.ToOneByteVector(), flags,
+                            empty_string_val);
+    } else {
+      return StringToDouble(unicode_cache, flat.ToUC16Vector(), flags,
+                            empty_string_val);
+    }
   }
 }
 

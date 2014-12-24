@@ -34,13 +34,20 @@
 #include "test/cctest/profiler-extension.h"
 #include "test/cctest/trace-extension.h"
 
+#if V8_OS_WIN
+#include <windows.h>  // NOLINT
+#if V8_CC_MSVC
+#include <crtdbg.h>
+#endif
+#endif
+
 enum InitializationState {kUnset, kUnintialized, kInitialized};
 static InitializationState initialization_state_  = kUnset;
 static bool disable_automatic_dispose_ = false;
 
 CcTest* CcTest::last_ = NULL;
 bool CcTest::initialize_called_ = false;
-bool CcTest::isolate_used_ = false;
+v8::base::Atomic32 CcTest::isolate_used_ = 0;
 v8::Isolate* CcTest::isolate_ = NULL;
 
 
@@ -138,11 +145,27 @@ static void SuggestTestHarness(int tests) {
 
 
 int main(int argc, char* argv[]) {
+#if V8_OS_WIN
+  UINT new_flags =
+      SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX;
+  UINT existing_flags = SetErrorMode(new_flags);
+  SetErrorMode(existing_flags | new_flags);
+#if V8_CC_MSVC
+  _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG | _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
+  _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_DEBUG | _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+  _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_DEBUG | _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+  _set_error_mode(_OUT_TO_STDERR);
+#endif  // V8_CC_MSVC
+#endif  // V8_OS_WIN
+
   v8::V8::InitializeICU();
   v8::Platform* platform = v8::platform::CreateDefaultPlatform();
   v8::V8::InitializePlatform(platform);
-
   v8::internal::FlagList::SetFlagsFromCommandLine(&argc, argv, true);
+  v8::V8::Initialize();
 
   CcTestArrayBufferAllocator array_buffer_allocator;
   v8::V8::SetArrayBufferAllocator(&array_buffer_allocator);
@@ -159,10 +182,6 @@ int main(int argc, char* argv[]) {
   for (int i = 1; i < argc; i++) {
     char* arg = argv[i];
     if (strcmp(arg, "--list") == 0) {
-      // TODO(svenpanne) Serializer::enabled() and Serializer::code_address_map_
-      // are fundamentally broken, so we can't unconditionally initialize and
-      // dispose V8.
-      v8::V8::Initialize();
       PrintTestList(CcTest::last());
       print_run_count = false;
 

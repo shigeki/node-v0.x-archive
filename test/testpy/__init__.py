@@ -41,37 +41,42 @@ FILES_PATTERN = re.compile(r"//\s+Files:(.*)")
 
 class SimpleTestCase(test.TestCase):
 
-  def __init__(self, path, file, mode, context, config, additional=[]):
-    super(SimpleTestCase, self).__init__(context, path, mode)
+  def __init__(self, path, file, arch, mode, context, config, additional=[]):
+    super(SimpleTestCase, self).__init__(context, path, arch, mode)
     self.file = file
     self.config = config
+    self.arch = arch
     self.mode = mode
     self.tmpdir = join(dirname(self.config.root), 'tmp')
     self.additional_flags = additional
+
+  def GetTmpDir(self):
+    return "%s.%d" % (self.tmpdir, self.thread_id)
+
   
   def AfterRun(self, result):
     # delete the whole tmp dir
     try:
-      rmtree(self.tmpdir)
+      rmtree(self.GetTmpDir())
     except:
       pass
     # make it again.
     try:
-      mkdir(self.tmpdir)
+      mkdir(self.GetTmpDir())
     except:
       pass
 
   def BeforeRun(self):
     # delete the whole tmp dir
     try:
-      rmtree(self.tmpdir)
+      rmtree(self.GetTmpDir())
     except:
       pass
     # make it again.
     # intermittently fails on win32, so keep trying
-    while not os.path.exists(self.tmpdir):
+    while not os.path.exists(self.GetTmpDir()):
       try:
-        mkdir(self.tmpdir)
+        mkdir(self.GetTmpDir())
       except:
         pass
   
@@ -82,7 +87,7 @@ class SimpleTestCase(test.TestCase):
     return self.path[-1]
 
   def GetCommand(self):
-    result = [self.config.context.GetVm(self.mode)]
+    result = [self.config.context.GetVm(self.arch, self.mode)]
     source = open(self.file).read()
     flags_match = FLAGS_PATTERN.search(source)
     if flags_match:
@@ -104,7 +109,6 @@ class SimpleTestCase(test.TestCase):
   def GetSource(self):
     return open(self.file).read()
 
-
 class SimpleTestConfiguration(test.TestConfiguration):
 
   def __init__(self, context, root, section, additional=[]):
@@ -117,14 +121,14 @@ class SimpleTestConfiguration(test.TestConfiguration):
       return name.startswith('test-') and name.endswith('.js')
     return [f[:-3] for f in os.listdir(path) if SelectTest(f)]
 
-  def ListTests(self, current_path, path, mode):
+  def ListTests(self, current_path, path, arch, mode):
     all_tests = [current_path + [t] for t in self.Ls(join(self.root))]
     result = []
     for test in all_tests:
       if self.Contains(path, test):
         file_path = join(self.root, reduce(join, test[1:], "") + ".js")
-        result.append(SimpleTestCase(test, file_path, mode, self.context, self,
-          self.additional_flags))
+        result.append(SimpleTestCase(test, file_path, arch, mode, self.context,
+                                     self, self.additional_flags))
     return result
 
   def GetBuildRequirements(self):
@@ -134,6 +138,18 @@ class SimpleTestConfiguration(test.TestConfiguration):
     status_file = join(self.root, '%s.status' % (self.section))
     if exists(status_file):
       test.ReadConfigurationInto(status_file, sections, defs)
+
+class ParallelTestConfiguration(SimpleTestConfiguration):
+  def __init__(self, context, root, section, additional=[]):
+    super(ParallelTestConfiguration, self).__init__(context, root, section,
+                                                    additional)
+
+  def ListTests(self, current_path, path, arch, mode):
+    result = super(ParallelTestConfiguration, self).ListTests(
+         current_path, path, arch, mode)
+    for test in result:
+      test.parallel = True
+    return result
 
 class AddonTestConfiguration(SimpleTestConfiguration):
   def __init__(self, context, root, section, additional=[]):
@@ -151,7 +167,7 @@ class AddonTestConfiguration(SimpleTestConfiguration):
             result.append([subpath, f[:-3]])
     return result
 
-  def ListTests(self, current_path, path, mode):
+  def ListTests(self, current_path, path, arch, mode):
     all_tests = [current_path + t for t in self.Ls(join(self.root))]
     result = []
     for test in all_tests:

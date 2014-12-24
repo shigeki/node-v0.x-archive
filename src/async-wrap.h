@@ -64,9 +64,9 @@ class AsyncWrap : public BaseObject {
   inline AsyncWrap(Environment* env,
                    v8::Handle<v8::Object> object,
                    ProviderType provider,
-                   AsyncWrap* parent = NULL);
+                   AsyncWrap* parent = nullptr);
 
-  inline ~AsyncWrap();
+  inline virtual ~AsyncWrap() override = default;
 
   inline uint32_t provider_type() const;
 

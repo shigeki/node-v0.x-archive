@@ -16,8 +16,9 @@ namespace internal {
 namespace compiler {
 
 class ControlBuilder;
-class LoopBuilder;
 class Graph;
+class LoopAssignmentAnalysis;
+class LoopBuilder;
 
 // The AstGraphBuilder produces a high-level IR graph, based on an
 // underlying AST. The produced graph can either be compiled into a
@@ -25,7 +26,7 @@ class Graph;
 // of function inlining.
 class AstGraphBuilder : public StructuredGraphBuilder, public AstVisitor {
  public:
-  AstGraphBuilder(CompilationInfo* info, JSGraph* jsgraph);
+  AstGraphBuilder(Zone* local_zone, CompilationInfo* info, JSGraph* jsgraph);
 
   // Creates a graph by visiting the entire AST.
   bool CreateGraph();
@@ -55,7 +56,7 @@ class AstGraphBuilder : public StructuredGraphBuilder, public AstVisitor {
   // Support for control flow builders. The concrete type of the environment
   // depends on the graph builder, but environments themselves are not virtual.
   typedef StructuredGraphBuilder::Environment BaseEnvironment;
-  virtual BaseEnvironment* CopyEnvironment(BaseEnvironment* env);
+  virtual BaseEnvironment* CopyEnvironment(BaseEnvironment* env) OVERRIDE;
 
   // TODO(mstarzinger): The pipeline only needs to be a friend to access the
   // function context. Remove as soon as the context is a parameter.
@@ -79,36 +80,45 @@ class AstGraphBuilder : public StructuredGraphBuilder, public AstVisitor {
 
   // Builders for variable load and assignment.
   Node* BuildVariableAssignment(Variable* var, Node* value, Token::Value op,
-                                BailoutId bailout_id);
-  Node* BuildVariableDelete(Variable* var);
+                                BailoutId bailout_id,
+                                OutputFrameStateCombine state_combine =
+                                    OutputFrameStateCombine::Ignore());
+  Node* BuildVariableDelete(Variable* var, BailoutId bailout_id,
+                            OutputFrameStateCombine state_combine);
   Node* BuildVariableLoad(Variable* var, BailoutId bailout_id,
+                          const VectorSlotPair& feedback,
                           ContextualMode mode = CONTEXTUAL);
 
   // Builders for accessing the function context.
   Node* BuildLoadBuiltinsObject();
   Node* BuildLoadGlobalObject();
   Node* BuildLoadClosure();
+  Node* BuildLoadObjectField(Node* object, int offset);
 
   // Builders for automatic type conversion.
   Node* BuildToBoolean(Node* value);
 
   // Builders for error reporting at runtime.
-  Node* BuildThrowReferenceError(Variable* var);
+  Node* BuildThrowReferenceError(Variable* var, BailoutId bailout_id);
 
   // Builders for dynamic hole-checks at runtime.
   Node* BuildHoleCheckSilent(Node* value, Node* for_hole, Node* not_hole);
-  Node* BuildHoleCheckThrow(Node* value, Variable* var, Node* not_hole);
+  Node* BuildHoleCheckThrow(Node* value, Variable* var, Node* not_hole,
+                            BailoutId bailout_id);
 
   // Builders for binary operations.
   Node* BuildBinaryOp(Node* left, Node* right, Token::Value op);
 
-#define DECLARE_VISIT(type) virtual void Visit##type(type* node);
+  // Builder for stack-check guards.
+  Node* BuildStackCheck();
+
+#define DECLARE_VISIT(type) virtual void Visit##type(type* node) OVERRIDE;
   // Visiting functions for AST nodes make this an AstVisitor.
   AST_NODE_LIST(DECLARE_VISIT)
 #undef DECLARE_VISIT
 
   // Visiting function for declarations list is overridden.
-  virtual void VisitDeclarations(ZoneList<Declaration*>* declarations);
+  virtual void VisitDeclarations(ZoneList<Declaration*>* declarations) OVERRIDE;
 
  private:
   CompilationInfo* info_;
@@ -128,8 +138,11 @@ class AstGraphBuilder : public StructuredGraphBuilder, public AstVisitor {
   SetOncePointer<Node> function_closure_;
   SetOncePointer<Node> function_context_;
 
-  CompilationInfo* info() { return info_; }
-  StrictMode strict_mode() { return info()->strict_mode(); }
+  // Result of loop assignment analysis performed before graph creation.
+  LoopAssignmentAnalysis* loop_assignment_analysis_;
+
+  CompilationInfo* info() const { return info_; }
+  inline StrictMode strict_mode() const;
   JSGraph* jsgraph() { return jsgraph_; }
   JSOperatorBuilder* javascript() { return jsgraph_->javascript(); }
   ZoneList<Handle<Object> >* globals() { return &globals_; }
@@ -137,14 +150,18 @@ class AstGraphBuilder : public StructuredGraphBuilder, public AstVisitor {
   // Current scope during visitation.
   inline Scope* current_scope() const;
 
+  // Named and keyed loads require a VectorSlotPair for successful lowering.
+  VectorSlotPair CreateVectorSlotPair(FeedbackVectorICSlot slot) const;
+
   // Process arguments to a call by popping {arity} elements off the operand
   // stack and build a call node using the given call operator.
-  Node* ProcessArguments(Operator* op, int arity);
+  Node* ProcessArguments(const Operator* op, int arity);
 
   // Visit statements.
   void VisitIfNotNull(Statement* stmt);
 
   // Visit expressions.
+  void Visit(Expression* expr);
   void VisitForTest(Expression* expr);
   void VisitForEffect(Expression* expr);
   void VisitForValue(Expression* expr);
@@ -171,8 +188,12 @@ class AstGraphBuilder : public StructuredGraphBuilder, public AstVisitor {
   // Dispatched from VisitForInStatement.
   void VisitForInAssignment(Expression* expr, Node* value);
 
-  void BuildLazyBailout(Node* node, BailoutId ast_id);
-  void BuildLazyBailoutWithPushedNode(Node* node, BailoutId ast_id);
+  // Builds deoptimization for a given node.
+  void PrepareFrameState(
+      Node* node, BailoutId ast_id,
+      OutputFrameStateCombine combine = OutputFrameStateCombine::Ignore());
+
+  BitVector* GetVariablesAssignedInLoop(IterationStatement* stmt);
 
   DEFINE_AST_VISITOR_SUBCLASS_MEMBERS();
   DISALLOW_COPY_AND_ASSIGN(AstGraphBuilder);
@@ -206,11 +227,9 @@ class AstGraphBuilder::Environment
     DCHECK(variable->IsStackAllocated());
     if (variable->IsParameter()) {
       values()->at(variable->index() + 1) = node;
-      parameters_dirty_ = true;
     } else {
       DCHECK(variable->IsStackLocal());
       values()->at(variable->index() + parameters_count_) = node;
-      locals_dirty_ = true;
     }
   }
   Node* Lookup(Variable* variable) {
@@ -226,7 +245,6 @@ class AstGraphBuilder::Environment
   // Operations on the operand stack.
   void Push(Node* node) {
     values()->push_back(node);
-    stack_dirty_ = true;
   }
   Node* Top() {
     DCHECK(stack_height() > 0);
@@ -236,7 +254,6 @@ class AstGraphBuilder::Environment
     DCHECK(stack_height() > 0);
     Node* back = values()->back();
     values()->pop_back();
-    stack_dirty_ = true;
     return back;
   }
 
@@ -245,7 +262,6 @@ class AstGraphBuilder::Environment
     DCHECK(depth >= 0 && depth < stack_height());
     int index = static_cast<int>(values()->size()) - depth - 1;
     values()->at(index) = node;
-    stack_dirty_ = true;
   }
   Node* Peek(int depth) {
     DCHECK(depth >= 0 && depth < stack_height());
@@ -255,22 +271,26 @@ class AstGraphBuilder::Environment
   void Drop(int depth) {
     DCHECK(depth >= 0 && depth <= stack_height());
     values()->erase(values()->end() - depth, values()->end());
-    stack_dirty_ = true;
   }
 
   // Preserve a checkpoint of the environment for the IR graph. Any
   // further mutation of the environment will not affect checkpoints.
-  Node* Checkpoint(BailoutId ast_id);
+  Node* Checkpoint(BailoutId ast_id, OutputFrameStateCombine combine);
+
+ protected:
+  AstGraphBuilder* builder() const {
+    return reinterpret_cast<AstGraphBuilder*>(
+        StructuredGraphBuilder::Environment::builder());
+  }
 
  private:
+  void UpdateStateValues(Node** state_values, int offset, int count);
+
   int parameters_count_;
   int locals_count_;
   Node* parameters_node_;
   Node* locals_node_;
   Node* stack_node_;
-  bool parameters_dirty_;
-  bool locals_dirty_;
-  bool stack_dirty_;
 };
 
 
@@ -282,10 +302,16 @@ class AstGraphBuilder::AstContext BASE_EMBEDDED {
   bool IsValue() const { return kind_ == Expression::kValue; }
   bool IsTest() const { return kind_ == Expression::kTest; }
 
+  // Determines how to combine the frame state with the value
+  // that is about to be plugged into this AstContext.
+  OutputFrameStateCombine GetStateCombine() {
+    return IsEffect() ? OutputFrameStateCombine::Ignore()
+                      : OutputFrameStateCombine::Push();
+  }
+
   // Plug a node into this expression context.  Call this function in tail
   // position in the Visit functions for expressions.
   virtual void ProduceValue(Node* value) = 0;
-  virtual void ProduceValueWithLazyBailout(Node* value) = 0;
 
   // Unplugs a node from this expression context.  Call this to retrieve the
   // result of another Visit function that already plugged the context.
@@ -295,8 +321,7 @@ class AstGraphBuilder::AstContext BASE_EMBEDDED {
   void ReplaceValue() { ProduceValue(ConsumeValue()); }
 
  protected:
-  AstContext(AstGraphBuilder* owner, Expression::Context kind,
-             BailoutId bailout_id);
+  AstContext(AstGraphBuilder* owner, Expression::Context kind);
   virtual ~AstContext();
 
   AstGraphBuilder* owner() const { return owner_; }
@@ -308,8 +333,6 @@ class AstGraphBuilder::AstContext BASE_EMBEDDED {
   int original_height_;
 #endif
 
-  BailoutId bailout_id_;
-
  private:
   Expression::Context kind_;
   AstGraphBuilder* owner_;
@@ -318,38 +341,35 @@ class AstGraphBuilder::AstContext BASE_EMBEDDED {
 
 
 // Context to evaluate expression for its side effects only.
-class AstGraphBuilder::AstEffectContext V8_FINAL : public AstContext {
+class AstGraphBuilder::AstEffectContext FINAL : public AstContext {
  public:
-  explicit AstEffectContext(AstGraphBuilder* owner, BailoutId bailout_id)
-      : AstContext(owner, Expression::kEffect, bailout_id) {}
+  explicit AstEffectContext(AstGraphBuilder* owner)
+      : AstContext(owner, Expression::kEffect) {}
   virtual ~AstEffectContext();
-  virtual void ProduceValue(Node* value) V8_OVERRIDE;
-  virtual void ProduceValueWithLazyBailout(Node* value) V8_OVERRIDE;
-  virtual Node* ConsumeValue() V8_OVERRIDE;
+  virtual void ProduceValue(Node* value) OVERRIDE;
+  virtual Node* ConsumeValue() OVERRIDE;
 };
 
 
 // Context to evaluate expression for its value (and side effects).
-class AstGraphBuilder::AstValueContext V8_FINAL : public AstContext {
+class AstGraphBuilder::AstValueContext FINAL : public AstContext {
  public:
-  explicit AstValueContext(AstGraphBuilder* owner, BailoutId bailout_id)
-      : AstContext(owner, Expression::kValue, bailout_id) {}
+  explicit AstValueContext(AstGraphBuilder* owner)
+      : AstContext(owner, Expression::kValue) {}
   virtual ~AstValueContext();
-  virtual void ProduceValue(Node* value) V8_OVERRIDE;
-  virtual void ProduceValueWithLazyBailout(Node* value) V8_OVERRIDE;
-  virtual Node* ConsumeValue() V8_OVERRIDE;
+  virtual void ProduceValue(Node* value) OVERRIDE;
+  virtual Node* ConsumeValue() OVERRIDE;
 };
 
 
 // Context to evaluate expression for a condition value (and side effects).
-class AstGraphBuilder::AstTestContext V8_FINAL : public AstContext {
+class AstGraphBuilder::AstTestContext FINAL : public AstContext {
  public:
-  explicit AstTestContext(AstGraphBuilder* owner, BailoutId bailout_id)
-      : AstContext(owner, Expression::kTest, bailout_id) {}
+  explicit AstTestContext(AstGraphBuilder* owner)
+      : AstContext(owner, Expression::kTest) {}
   virtual ~AstTestContext();
-  virtual void ProduceValue(Node* value) V8_OVERRIDE;
-  virtual void ProduceValueWithLazyBailout(Node* value) V8_OVERRIDE;
-  virtual Node* ConsumeValue() V8_OVERRIDE;
+  virtual void ProduceValue(Node* value) OVERRIDE;
+  virtual Node* ConsumeValue() OVERRIDE;
 };
 
 
@@ -421,8 +441,9 @@ class AstGraphBuilder::ContextScope BASE_EMBEDDED {
 Scope* AstGraphBuilder::current_scope() const {
   return execution_context_->scope();
 }
-}
-}
-}  // namespace v8::internal::compiler
+
+}  // namespace compiler
+}  // namespace internal
+}  // namespace v8
 
 #endif  // V8_COMPILER_AST_GRAPH_BUILDER_H_

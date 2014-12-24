@@ -14,6 +14,9 @@
 
 namespace v8 {
 namespace internal {
+
+class BitVector;
+
 namespace compiler {
 
 class Node;
@@ -24,49 +27,52 @@ class GraphBuilder {
   explicit GraphBuilder(Graph* graph) : graph_(graph) {}
   virtual ~GraphBuilder() {}
 
-  Node* NewNode(Operator* op) {
-    return MakeNode(op, 0, static_cast<Node**>(NULL));
+  Node* NewNode(const Operator* op, bool incomplete = false) {
+    return MakeNode(op, 0, static_cast<Node**>(NULL), incomplete);
   }
 
-  Node* NewNode(Operator* op, Node* n1) { return MakeNode(op, 1, &n1); }
+  Node* NewNode(const Operator* op, Node* n1) {
+    return MakeNode(op, 1, &n1, false);
+  }
 
-  Node* NewNode(Operator* op, Node* n1, Node* n2) {
+  Node* NewNode(const Operator* op, Node* n1, Node* n2) {
     Node* buffer[] = {n1, n2};
-    return MakeNode(op, ARRAY_SIZE(buffer), buffer);
+    return MakeNode(op, arraysize(buffer), buffer, false);
   }
 
-  Node* NewNode(Operator* op, Node* n1, Node* n2, Node* n3) {
+  Node* NewNode(const Operator* op, Node* n1, Node* n2, Node* n3) {
     Node* buffer[] = {n1, n2, n3};
-    return MakeNode(op, ARRAY_SIZE(buffer), buffer);
+    return MakeNode(op, arraysize(buffer), buffer, false);
   }
 
-  Node* NewNode(Operator* op, Node* n1, Node* n2, Node* n3, Node* n4) {
+  Node* NewNode(const Operator* op, Node* n1, Node* n2, Node* n3, Node* n4) {
     Node* buffer[] = {n1, n2, n3, n4};
-    return MakeNode(op, ARRAY_SIZE(buffer), buffer);
+    return MakeNode(op, arraysize(buffer), buffer, false);
   }
 
-  Node* NewNode(Operator* op, Node* n1, Node* n2, Node* n3, Node* n4,
+  Node* NewNode(const Operator* op, Node* n1, Node* n2, Node* n3, Node* n4,
                 Node* n5) {
     Node* buffer[] = {n1, n2, n3, n4, n5};
-    return MakeNode(op, ARRAY_SIZE(buffer), buffer);
+    return MakeNode(op, arraysize(buffer), buffer, false);
   }
 
-  Node* NewNode(Operator* op, Node* n1, Node* n2, Node* n3, Node* n4, Node* n5,
-                Node* n6) {
+  Node* NewNode(const Operator* op, Node* n1, Node* n2, Node* n3, Node* n4,
+                Node* n5, Node* n6) {
     Node* nodes[] = {n1, n2, n3, n4, n5, n6};
-    return MakeNode(op, ARRAY_SIZE(nodes), nodes);
+    return MakeNode(op, arraysize(nodes), nodes, false);
   }
 
-  Node* NewNode(Operator* op, int value_input_count, Node** value_inputs) {
-    return MakeNode(op, value_input_count, value_inputs);
+  Node* NewNode(const Operator* op, int value_input_count, Node** value_inputs,
+                bool incomplete = false) {
+    return MakeNode(op, value_input_count, value_inputs, incomplete);
   }
 
   Graph* graph() const { return graph_; }
 
  protected:
   // Base implementation used by all factory methods.
-  virtual Node* MakeNode(Operator* op, int value_input_count,
-                         Node** value_inputs) = 0;
+  virtual Node* MakeNode(const Operator* op, int value_input_count,
+                         Node** value_inputs, bool incomplete) = 0;
 
  private:
   Graph* graph_;
@@ -78,7 +84,8 @@ class GraphBuilder {
 // StubGraphBuilder).
 class StructuredGraphBuilder : public GraphBuilder {
  public:
-  StructuredGraphBuilder(Graph* graph, CommonOperatorBuilder* common);
+  StructuredGraphBuilder(Zone* zone, Graph* graph,
+                         CommonOperatorBuilder* common);
   virtual ~StructuredGraphBuilder() {}
 
   // Creates a new Phi node having {count} input values.
@@ -93,21 +100,22 @@ class StructuredGraphBuilder : public GraphBuilder {
   // Helpers to create new control nodes.
   Node* NewIfTrue() { return NewNode(common()->IfTrue()); }
   Node* NewIfFalse() { return NewNode(common()->IfFalse()); }
-  Node* NewMerge() { return NewNode(common()->Merge(1)); }
-  Node* NewLoop() { return NewNode(common()->Loop(1)); }
-  Node* NewBranch(Node* condition) {
-    return NewNode(common()->Branch(), condition);
+  Node* NewMerge() { return NewNode(common()->Merge(1), true); }
+  Node* NewLoop() { return NewNode(common()->Loop(1), true); }
+  Node* NewBranch(Node* condition, BranchHint hint = BranchHint::kNone) {
+    return NewNode(common()->Branch(hint), condition);
   }
 
  protected:
   class Environment;
+  friend class Environment;
   friend class ControlBuilder;
 
   // The following method creates a new node having the specified operator and
   // ensures effect and control dependencies are wired up. The dependencies
   // tracked by the environment might be mutated.
-  virtual Node* MakeNode(Operator* op, int value_input_count,
-                         Node** value_inputs);
+  virtual Node* MakeNode(const Operator* op, int value_input_count,
+                         Node** value_inputs, bool incomplete) FINAL;
 
   Environment* environment() const { return environment_; }
   void set_environment(Environment* env) { environment_ = env; }
@@ -120,15 +128,15 @@ class StructuredGraphBuilder : public GraphBuilder {
 
   Node* dead_control();
 
-  // TODO(mstarzinger): Use phase-local zone instead!
-  Zone* zone() const { return graph()->zone(); }
-  Isolate* isolate() const { return zone()->isolate(); }
+  Zone* graph_zone() const { return graph()->zone(); }
+  Zone* local_zone() const { return local_zone_; }
+  Isolate* isolate() const { return graph_zone()->isolate(); }
   CommonOperatorBuilder* common() const { return common_; }
 
   // Helper to wrap a Handle<T> into a Unique<T>.
   template <class T>
-  PrintableUnique<T> MakeUnique(Handle<T> object) {
-    return PrintableUnique<T>::CreateUninitialized(zone(), object);
+  Unique<T> MakeUnique(Handle<T> object) {
+    return Unique<T>::CreateUninitialized(object);
   }
 
   // Support for control flow builders. The concrete type of the environment
@@ -142,6 +150,13 @@ class StructuredGraphBuilder : public GraphBuilder {
   CommonOperatorBuilder* common_;
   Environment* environment_;
 
+  // Zone local to the builder for data not leaking into the graph.
+  Zone* local_zone_;
+
+  // Temporary storage for building node input lists.
+  int input_buffer_size_;
+  Node** input_buffer_;
+
   // Node representing the control dependency for dead code.
   SetOncePointer<Node> dead_control_;
 
@@ -150,6 +165,12 @@ class StructuredGraphBuilder : public GraphBuilder {
 
   // Merge of all control nodes that exit the function body.
   Node* exit_control_;
+
+  // Growth increment for the temporary buffer used to construct input lists to
+  // new nodes.
+  static const int kInputBufferSizeIncrement = 64;
+
+  Node** EnsureInputBufferSize(int size);
 
   DISALLOW_COPY_AND_ASSIGN(StructuredGraphBuilder);
 };
@@ -197,21 +218,22 @@ class StructuredGraphBuilder::Environment : public ZoneObject {
   }
 
   // Copies this environment at a loop header control-flow point.
-  Environment* CopyForLoop() {
-    PrepareForLoop();
+  Environment* CopyForLoop(BitVector* assigned) {
+    PrepareForLoop(assigned);
     return builder()->CopyEnvironment(this);
   }
 
+  Node* GetContext() { return builder_->current_context(); }
+
  protected:
-  // TODO(mstarzinger): Use phase-local zone instead!
-  Zone* zone() const { return graph()->zone(); }
+  Zone* zone() const { return builder_->local_zone(); }
   Graph* graph() const { return builder_->graph(); }
   StructuredGraphBuilder* builder() const { return builder_; }
   CommonOperatorBuilder* common() { return builder_->common(); }
   NodeVector* values() { return &values_; }
 
   // Prepare environment to be used as loop header.
-  void PrepareForLoop();
+  void PrepareForLoop(BitVector* assigned);
 
  private:
   StructuredGraphBuilder* builder_;

@@ -6,10 +6,10 @@
 
 #if V8_TARGET_ARCH_IA32
 
+#include "src/code-factory.h"
 #include "src/codegen.h"
 #include "src/deoptimizer.h"
 #include "src/full-codegen.h"
-#include "src/stub-cache.h"
 
 namespace v8 {
 namespace internal {
@@ -550,8 +550,8 @@ void Builtins::Generate_JSConstructEntryTrampoline(MacroAssembler* masm) {
 }
 
 
-void Builtins::Generate_CompileUnoptimized(MacroAssembler* masm) {
-  CallRuntimePassFunction(masm, Runtime::kCompileUnoptimized);
+void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
+  CallRuntimePassFunction(masm, Runtime::kCompileLazy);
   GenerateTailCallToReturnedCode(masm);
 }
 
@@ -995,23 +995,28 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
 
     // Copy all arguments from the array to the stack.
     Label entry, loop;
-    Register receiver = LoadIC::ReceiverRegister();
-    Register key = LoadIC::NameRegister();
+    Register receiver = LoadDescriptor::ReceiverRegister();
+    Register key = LoadDescriptor::NameRegister();
     __ mov(key, Operand(ebp, kIndexOffset));
     __ jmp(&entry);
     __ bind(&loop);
     __ mov(receiver, Operand(ebp, kArgumentsOffset));  // load arguments
 
-    // Use inline caching to speed up access to arguments.
     if (FLAG_vector_ics) {
-      __ mov(LoadIC::SlotRegister(), Immediate(Smi::FromInt(0)));
+      // TODO(mvstanton): Vector-based ics need additional infrastructure to
+      // be embedded here. For now, just call the runtime.
+      __ push(receiver);
+      __ push(key);
+      __ CallRuntime(Runtime::kGetProperty, 2);
+    } else {
+      // Use inline caching to speed up access to arguments.
+      Handle<Code> ic = CodeFactory::KeyedLoadIC(masm->isolate()).code();
+      __ call(ic, RelocInfo::CODE_TARGET);
+      // It is important that we do not have a test instruction after the
+      // call.  A test instruction after the call is used to indicate that
+      // we have generated an inline version of the keyed load.  In this
+      // case, we know that we are not generating a test instruction next.
     }
-    Handle<Code> ic = masm->isolate()->builtins()->KeyedLoadIC_Initialize();
-    __ call(ic, RelocInfo::CODE_TARGET);
-    // It is important that we do not have a test instruction after the
-    // call.  A test instruction after the call is used to indicate that
-    // we have generated an inline version of the keyed load.  In this
-    // case, we know that we are not generating a test instruction next.
 
     // Push the nth argument.
     __ push(eax);

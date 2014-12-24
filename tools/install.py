@@ -127,7 +127,8 @@ def subdir_files(path, dest, action):
     action(files, subdir + '/')
 
 def files(action):
-  action(['out/Release/node'], 'bin/node')
+  exeext = '.exe' if sys.platform == 'win32' else ''
+  action(['out/Release/node' + exeext], 'bin/node' + exeext)
 
   if 'true' == variables.get('node_use_dtrace'):
     action(['out/Release/node.d'], 'lib/dtrace/node.d')
@@ -153,8 +154,7 @@ def files(action):
     'src/smalloc.h',
   ], 'include/node/')
 
-  if 'false' == variables.get('node_shared_cares'):
-    subdir_files('deps/cares/include', 'include/node/', action)
+  subdir_files('deps/cares/include', 'include/node/', action)
 
   if 'false' == variables.get('node_shared_libuv'):
     subdir_files('deps/uv/include', 'include/node/', action)

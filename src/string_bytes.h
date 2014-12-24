@@ -68,13 +68,19 @@ class StringBytes {
                       size_t buflen,
                       v8::Handle<v8::Value> val,
                       enum encoding enc,
-                      int* chars_written = NULL);
+                      int* chars_written = nullptr);
 
   // Take the bytes in the src, and turn it into a Buffer or String.
+  // Don't call with encoding=UCS2.
   static v8::Local<v8::Value> Encode(v8::Isolate* isolate,
                                      const char* buf,
                                      size_t buflen,
                                      enum encoding encoding);
+
+  // The input buffer should be in host endianness.
+  static v8::Local<v8::Value> Encode(v8::Isolate* isolate,
+                                     const uint16_t* buf,
+                                     size_t buflen);
 
   // Deprecated legacy interface
 
@@ -109,7 +115,7 @@ class StringBytes {
                                              size_t buflen,
                                              v8::Handle<v8::Value> val,
                                              enum encoding enc,
-                                             int* chars_written = NULL) {
+                                             int* chars_written = nullptr) {
     v8::Isolate* isolate = v8::Isolate::GetCurrent();
     return Write(isolate, buf, buflen, val, enc, chars_written);
   })

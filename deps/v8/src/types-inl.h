@@ -56,6 +56,13 @@ bool TypeImpl<Config>::NowContains(i::Object* value) {
 
 // static
 template<class T>
+T* ZoneTypeConfig::null_handle() {
+  return NULL;
+}
+
+
+// static
+template<class T>
 T* ZoneTypeConfig::handle(T* type) {
   return type;
 }
@@ -70,7 +77,7 @@ T* ZoneTypeConfig::cast(Type* type) {
 
 // static
 bool ZoneTypeConfig::is_bitset(Type* type) {
-  return reinterpret_cast<intptr_t>(type) & 1;
+  return reinterpret_cast<uintptr_t>(type) & 1;
 }
 
 
@@ -87,9 +94,9 @@ bool ZoneTypeConfig::is_class(Type* type) {
 
 
 // static
-int ZoneTypeConfig::as_bitset(Type* type) {
+ZoneTypeConfig::Type::bitset ZoneTypeConfig::as_bitset(Type* type) {
   DCHECK(is_bitset(type));
-  return static_cast<int>(reinterpret_cast<intptr_t>(type) >> 1);
+  return static_cast<Type::bitset>(reinterpret_cast<uintptr_t>(type) ^ 1u);
 }
 
 
@@ -108,13 +115,14 @@ i::Handle<i::Map> ZoneTypeConfig::as_class(Type* type) {
 
 
 // static
-ZoneTypeConfig::Type* ZoneTypeConfig::from_bitset(int bitset) {
-  return reinterpret_cast<Type*>((bitset << 1) | 1);
+ZoneTypeConfig::Type* ZoneTypeConfig::from_bitset(Type::bitset bitset) {
+  return reinterpret_cast<Type*>(static_cast<uintptr_t>(bitset | 1u));
 }
 
 
 // static
-ZoneTypeConfig::Type* ZoneTypeConfig::from_bitset(int bitset, Zone* Zone) {
+ZoneTypeConfig::Type* ZoneTypeConfig::from_bitset(
+    Type::bitset bitset, Zone* Zone) {
   return from_bitset(bitset);
 }
 
@@ -198,6 +206,13 @@ void ZoneTypeConfig::struct_set_value(
 
 // static
 template<class T>
+i::Handle<T> HeapTypeConfig::null_handle() {
+  return i::Handle<T>();
+}
+
+
+// static
+template<class T>
 i::Handle<T> HeapTypeConfig::handle(T* type) {
   return i::handle(type, i::HeapObject::cast(type)->GetIsolate());
 }
@@ -229,8 +244,9 @@ bool HeapTypeConfig::is_struct(Type* type, int tag) {
 
 
 // static
-int HeapTypeConfig::as_bitset(Type* type) {
-  return i::Smi::cast(type)->value();
+HeapTypeConfig::Type::bitset HeapTypeConfig::as_bitset(Type* type) {
+  // TODO(rossberg): Breaks the Smi abstraction. Fix once there is a better way.
+  return static_cast<Type::bitset>(reinterpret_cast<uintptr_t>(type));
 }
 
 
@@ -247,14 +263,15 @@ i::Handle<HeapTypeConfig::Struct> HeapTypeConfig::as_struct(Type* type) {
 
 
 // static
-HeapTypeConfig::Type* HeapTypeConfig::from_bitset(int bitset) {
-  return Type::cast(i::Smi::FromInt(bitset));
+HeapTypeConfig::Type* HeapTypeConfig::from_bitset(Type::bitset bitset) {
+  // TODO(rossberg): Breaks the Smi abstraction. Fix once there is a better way.
+  return reinterpret_cast<Type*>(static_cast<uintptr_t>(bitset));
 }
 
 
 // static
 i::Handle<HeapTypeConfig::Type> HeapTypeConfig::from_bitset(
-    int bitset, Isolate* isolate) {
+    Type::bitset bitset, Isolate* isolate) {
   return i::handle(from_bitset(bitset), isolate);
 }
 

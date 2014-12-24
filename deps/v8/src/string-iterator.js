@@ -38,7 +38,7 @@ function StringIteratorIterator() {
 function StringIteratorNext() {
   var iterator = ToObject(this);
 
-  if (!HAS_PRIVATE(iterator, stringIteratorIteratedStringSymbol)) {
+  if (!HAS_DEFINED_PRIVATE(iterator, stringIteratorNextIndexSymbol)) {
     throw MakeTypeError('incompatible_method_receiver',
                         ['String Iterator.prototype.next']);
   }
@@ -52,7 +52,8 @@ function StringIteratorNext() {
   var length = TO_UINT32(s.length);
 
   if (position >= length) {
-    SET_PRIVATE(iterator, stringIteratorIteratedStringSymbol, UNDEFINED);
+    SET_PRIVATE(iterator, stringIteratorIteratedStringSymbol,
+                UNDEFINED);
     return CreateIteratorResultObject(UNDEFINED, true);
   }
 
@@ -86,6 +87,8 @@ function SetUpStringIterator() {
   %FunctionSetName(StringIteratorIterator, '[Symbol.iterator]');
   %AddNamedProperty(StringIterator.prototype, symbolIterator,
                     StringIteratorIterator, DONT_ENUM);
+  %AddNamedProperty(StringIterator.prototype, symbolToStringTag,
+                    "String Iterator", READ_ONLY | DONT_ENUM);
 }
 SetUpStringIterator();
 

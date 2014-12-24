@@ -5,19 +5,14 @@
 #ifndef V8_COMPILER_GENERIC_NODE_H_
 #define V8_COMPILER_GENERIC_NODE_H_
 
-#include <deque>
-
 #include "src/v8.h"
 
-#include "src/compiler/operator.h"
-#include "src/zone.h"
-#include "src/zone-allocator.h"
+#include "src/zone-containers.h"
 
 namespace v8 {
 namespace internal {
 namespace compiler {
 
-class Operator;
 class GenericGraphBase;
 
 typedef int NodeId;
@@ -43,9 +38,10 @@ class GenericNode : public B {
   S* InputAt(int index) const {
     return static_cast<S*>(GetInputRecordPtr(index)->to);
   }
-  void ReplaceInput(int index, GenericNode* new_input);
-  void AppendInput(Zone* zone, GenericNode* new_input);
-  void InsertInput(Zone* zone, int index, GenericNode* new_input);
+  inline void ReplaceInput(int index, GenericNode* new_input);
+  inline void AppendInput(Zone* zone, GenericNode* new_input);
+  inline void InsertInput(Zone* zone, int index, GenericNode* new_input);
+  inline void RemoveInput(int index);
 
   int UseCount() { return use_count_; }
   S* UseAt(int index) {
@@ -59,9 +55,9 @@ class GenericNode : public B {
   inline void ReplaceUses(GenericNode* replace_to);
   template <class UnaryPredicate>
   inline void ReplaceUsesIf(UnaryPredicate pred, GenericNode* replace_to);
-  void RemoveAllInputs();
+  inline void RemoveAllInputs();
 
-  void TrimInputCount(int input_count);
+  inline void TrimInputCount(int input_count);
 
   class Inputs {
    public:
@@ -96,7 +92,8 @@ class GenericNode : public B {
 
   bool OwnedBy(GenericNode* owner) const;
 
-  static S* New(GenericGraphBase* graph, int input_count, S** inputs);
+  static S* New(GenericGraphBase* graph, int input_count, S** inputs,
+                bool has_extensible_inputs);
 
  protected:
   friend class GenericGraphBase;
@@ -127,21 +124,26 @@ class GenericNode : public B {
     }
   }
 
-  void AppendUse(Use* use);
-  void RemoveUse(Use* use);
+  inline void AppendUse(Use* use);
+  inline void RemoveUse(Use* use);
 
   void* operator new(size_t, void* location) { return location; }
 
-  GenericNode(GenericGraphBase* graph, int input_count);
+  GenericNode(GenericGraphBase* graph, int input_count,
+              int reserved_input_count);
 
  private:
   void AssignUniqueID(GenericGraphBase* graph);
 
-  typedef zone_allocator<Input> ZoneInputAllocator;
-  typedef std::deque<Input, ZoneInputAllocator> InputDeque;
+  typedef ZoneDeque<Input> InputDeque;
+
+  static const int kReservedInputCountBits = 2;
+  static const int kMaxReservedInputs = (1 << kReservedInputCountBits) - 1;
+  static const int kDefaultReservedInputs = kMaxReservedInputs;
 
   NodeId id_;
-  int input_count_ : 31;
+  int input_count_ : 29;
+  unsigned int reserve_input_count_ : kReservedInputCountBits;
   bool has_appendable_inputs_ : 1;
   union {
     // When a node is initially allocated, it uses a static buffer to hold its
@@ -202,6 +204,12 @@ class GenericNode<B, S>::Inputs::iterator {
     DCHECK(node_ != NULL);
     DCHECK(index_ < node_->input_count_);
     ++index_;
+    return *this;
+  }
+  iterator& UpdateToAndIncrement(GenericNode<B, S>* new_to) {
+    typename GenericNode<B, S>::Input* input = GetInput();
+    input->Update(new_to);
+    index_++;
     return *this;
   }
   int index() { return index_; }

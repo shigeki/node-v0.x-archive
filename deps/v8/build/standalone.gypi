@@ -136,6 +136,14 @@
     'configurations': {
       'DebugBaseCommon': {
         'cflags': [ '-g', '-O0' ],
+        'conditions': [
+          ['(v8_target_arch=="ia32" or v8_target_arch=="x87") and \
+            OS=="linux"', {
+            'defines': [
+              '_GLIBCXX_DEBUG'
+            ],
+          }],
+        ],
       },
       'Optdebug': {
         'inherit_from': [ 'DebugBaseCommon', 'DebugBase2' ],
@@ -215,9 +223,18 @@
     ['OS=="linux" or OS=="freebsd" or OS=="openbsd" or OS=="solaris" \
        or OS=="netbsd"', {
       'target_defaults': {
-        'cflags': [ '-Wall', '<(werror)', '-W', '-Wno-unused-parameter',
-                    '-Wno-long-long', '-pthread', '-fno-exceptions',
-                    '-pedantic' ],
+        'cflags': [
+          '-Wall',
+          '<(werror)',
+          '-W',
+          '-Wno-unused-parameter',
+          '-Wno-long-long',
+          '-pthread',
+          '-fno-exceptions',
+          '-pedantic',
+          # Don't warn about the "struct foo f = {0};" initialization pattern.
+          '-Wno-missing-field-initializers',
+        ],
         'cflags_cc': [ '-Wnon-virtual-dtor', '-fno-rtti', '-std=gnu++0x' ],
         'ldflags': [ '-pthread', ],
         'conditions': [
@@ -234,8 +251,15 @@
     #  or OS=="netbsd"'
     ['OS=="qnx"', {
       'target_defaults': {
-        'cflags': [ '-Wall', '<(werror)', '-W', '-Wno-unused-parameter',
-                    '-fno-exceptions' ],
+        'cflags': [
+          '-Wall',
+          '<(werror)',
+          '-W',
+          '-Wno-unused-parameter',
+          '-fno-exceptions',
+          # Don't warn about the "struct foo f = {0};" initialization pattern.
+          '-Wno-missing-field-initializers',
+        ],
         'cflags_cc': [ '-Wnon-virtual-dtor', '-fno-rtti', '-std=gnu++0x' ],
         'conditions': [
           [ 'visibility=="hidden"', {
@@ -263,6 +287,7 @@
         'defines': [
           '_CRT_SECURE_NO_DEPRECATE',
           '_CRT_NONSTDC_NO_DEPRECATE',
+          '_USING_V110_SDK71_',
         ],
         'conditions': [
           ['component=="static_library"', {
@@ -296,6 +321,13 @@
           },
           'VCLibrarianTool': {
             'AdditionalOptions': ['/ignore:4221'],
+            'conditions': [
+              ['v8_target_arch=="x64"', {
+                'TargetMachine': '17',  # x64
+              }, {
+                'TargetMachine': '1',  # ia32
+              }],
+            ],
           },
           'VCLinkerTool': {
             'AdditionalDependencies': [
@@ -321,6 +353,13 @@
                 'AdditionalDependencies': [
                   'advapi32.lib',
                 ],
+              }],
+              ['v8_target_arch=="x64"', {
+                'MinimumRequiredVersion': '5.02',  # Server 2003.
+                'TargetMachine': '17',  # x64
+              }, {
+                'MinimumRequiredVersion': '5.01',  # XP.
+                'TargetMachine': '1',  # ia32
               }],
             ],
           },
@@ -359,6 +398,8 @@
             '-Wendif-labels',
             '-W',
             '-Wno-unused-parameter',
+            # Don't warn about the "struct foo f = {0};" initialization pattern.
+            '-Wno-missing-field-initializers',
           ],
         },
         'conditions': [

@@ -86,7 +86,7 @@ static AllocationResult AllocateAfterFailures() {
       Builtins::kIllegal)).ToObjectChecked();
 
   // Return success.
-  return Smi::FromInt(42);
+  return heap->true_value();
 }
 
 
@@ -100,13 +100,13 @@ TEST(StressHandles) {
   v8::Handle<v8::Context> env = v8::Context::New(CcTest::isolate());
   env->Enter();
   Handle<Object> o = Test();
-  CHECK(o->IsSmi() && Smi::cast(*o)->value() == 42);
+  CHECK(o->IsTrue());
   env->Exit();
 }
 
 
 void TestGetter(
-    v8::Local<v8::String> name,
+    v8::Local<v8::Name> name,
     const v8::PropertyCallbackInfo<v8::Value>& info) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(info.GetIsolate());
   HandleScope scope(isolate);
@@ -115,7 +115,7 @@ void TestGetter(
 
 
 void TestSetter(
-    v8::Local<v8::String> name,
+    v8::Local<v8::Name> name,
     v8::Local<v8::Value> value,
     const v8::PropertyCallbackInfo<void>& info) {
   UNREACHABLE();
@@ -124,7 +124,7 @@ void TestSetter(
 
 Handle<AccessorInfo> TestAccessorInfo(
       Isolate* isolate, PropertyAttributes attributes) {
-  Handle<String> name = isolate->factory()->NewStringFromStaticAscii("get");
+  Handle<String> name = isolate->factory()->NewStringFromStaticChars("get");
   return Accessors::MakeAccessor(isolate, name, &TestGetter, &TestSetter,
                                  attributes);
 }
@@ -162,7 +162,7 @@ TEST(StressJS) {
   // Call the accessor through JavaScript.
   v8::Handle<v8::Value> result = v8::Script::Compile(
       v8::String::NewFromUtf8(CcTest::isolate(), "(new Foo).get"))->Run();
-  CHECK_EQ(42, result->Int32Value());
+  CHECK_EQ(true, result->BooleanValue());
   env->Exit();
 }
 

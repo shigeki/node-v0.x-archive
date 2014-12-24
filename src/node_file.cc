@@ -34,7 +34,6 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <assert.h>
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
@@ -74,7 +73,7 @@ class FSReqWrap: public ReqWrap<uv_fs_t> {
   FSReqWrap(Environment* env,
             Local<Object> req,
             const char* syscall,
-            char* data = NULL)
+            char* data = nullptr)
     : ReqWrap(env, req, AsyncWrap::PROVIDER_FSREQWRAP),
       syscall_(syscall),
       data_(data),
@@ -83,10 +82,10 @@ class FSReqWrap: public ReqWrap<uv_fs_t> {
   }
 
   void ReleaseEarly() {
-    if (data_ == NULL)
+    if (data_ == nullptr)
       return;
     delete[] data_;
-    data_ = NULL;
+    data_ = nullptr;
   }
 
   inline const char* syscall() const { return syscall_; }
@@ -125,7 +124,7 @@ static inline bool IsInt64(double x) {
 
 static void After(uv_fs_t *req) {
   FSReqWrap* req_wrap = static_cast<FSReqWrap*>(req->data);
-  assert(&req_wrap->req_ == req);
+  CHECK_EQ(&req_wrap->req_, req);
   req_wrap->ReleaseEarly();  // Free memory that's no longer used now.
 
   Environment* env = req_wrap->env();
@@ -141,19 +140,19 @@ static void After(uv_fs_t *req) {
 
   if (req->result < 0) {
     // If the request doesn't have a path parameter set.
-    if (req->path == NULL) {
-      argv[0] = UVException(req->result, NULL, req_wrap->syscall());
+    if (req->path == nullptr) {
+      argv[0] = UVException(req->result, nullptr, req_wrap->syscall());
     } else if ((req->result == UV_EEXIST ||
                 req->result == UV_ENOTEMPTY ||
                 req->result == UV_EPERM) &&
                req_wrap->dest_len() > 0) {
       argv[0] = UVException(req->result,
-                            NULL,
+                            nullptr,
                             req_wrap->syscall(),
                             req_wrap->dest());
     } else {
       argv[0] = UVException(req->result,
-                            NULL,
+                            nullptr,
                             req_wrap->syscall(),
                             static_cast<const char*>(req->path));
     }
@@ -166,6 +165,7 @@ static void After(uv_fs_t *req) {
 
     switch (req->fs_type) {
       // These all have no data to pass.
+      case UV_FS_ACCESS:
       case UV_FS_CLOSE:
       case UV_FS_RENAME:
       case UV_FS_UNLINK:
@@ -227,7 +227,7 @@ static void After(uv_fs_t *req) {
               break;
             if (r != 0) {
               argv[0] = UVException(r,
-                                    NULL,
+                                    nullptr,
                                     req_wrap->syscall(),
                                     static_cast<const char*>(req->path));
               break;
@@ -243,7 +243,7 @@ static void After(uv_fs_t *req) {
         break;
 
       default:
-        assert(0 && "Unhandled eio response");
+        CHECK(0 && "Unhandled eio response");
     }
   }
 
@@ -258,23 +258,21 @@ static void After(uv_fs_t *req) {
 struct fs_req_wrap {
   fs_req_wrap() {}
   ~fs_req_wrap() { uv_fs_req_cleanup(&req); }
-  // Ensure that copy ctor and assignment operator are not used.
-  fs_req_wrap(const fs_req_wrap& req);
-  fs_req_wrap& operator=(const fs_req_wrap& req);
   uv_fs_t req;
+  DISALLOW_COPY_AND_ASSIGN(fs_req_wrap);
 };
 
 
 #define ASYNC_DEST_CALL(func, req, dest_path, ...)                            \
-  Environment* env = Environment::GetCurrent(args.GetIsolate());              \
+  Environment* env = Environment::GetCurrent(args);                           \
   FSReqWrap* req_wrap;                                                        \
   char* dest_str = (dest_path);                                               \
-  int dest_len = dest_str == NULL ? 0 : strlen(dest_str);                     \
+  int dest_len = dest_str == nullptr ? 0 : strlen(dest_str);                  \
   char* storage = new char[sizeof(*req_wrap) + dest_len];                     \
   CHECK(req->IsObject());                                                     \
   req_wrap = new(storage) FSReqWrap(env, req.As<Object>(), #func);            \
   req_wrap->dest_len(dest_len);                                               \
-  if (dest_str != NULL) {                                                     \
+  if (dest_str != nullptr) {                                                  \
     memcpy(const_cast<char*>(req_wrap->dest()),                               \
            dest_str,                                                          \
            dest_len + 1);                                                     \
@@ -287,22 +285,22 @@ struct fs_req_wrap {
   if (err < 0) {                                                              \
     uv_fs_t* uv_req = &req_wrap->req_;                                        \
     uv_req->result = err;                                                     \
-    uv_req->path = NULL;                                                      \
+    uv_req->path = nullptr;                                                   \
     After(uv_req);                                                            \
   }                                                                           \
   args.GetReturnValue().Set(req_wrap->persistent());
 
 #define ASYNC_CALL(func, req, ...)                                            \
-  ASYNC_DEST_CALL(func, req, NULL, __VA_ARGS__)                               \
+  ASYNC_DEST_CALL(func, req, nullptr, __VA_ARGS__)                            \
 
 #define SYNC_DEST_CALL(func, path, dest, ...)                                 \
   fs_req_wrap req_wrap;                                                       \
   int err = uv_fs_ ## func(env->event_loop(),                                 \
                          &req_wrap.req,                                       \
                          __VA_ARGS__,                                         \
-                         NULL);                                               \
+                         nullptr);                                            \
   if (err < 0) {                                                              \
-    if (dest != NULL &&                                                       \
+    if (dest != nullptr &&                                                    \
         (err == UV_EEXIST ||                                                  \
          err == UV_ENOTEMPTY ||                                               \
          err == UV_EPERM)) {                                                  \
@@ -313,16 +311,37 @@ struct fs_req_wrap {
   }                                                                           \
 
 #define SYNC_CALL(func, path, ...)                                            \
-  SYNC_DEST_CALL(func, path, NULL, __VA_ARGS__)                               \
+  SYNC_DEST_CALL(func, path, nullptr, __VA_ARGS__)                            \
 
 #define SYNC_REQ req_wrap.req
 
 #define SYNC_RESULT err
 
 
-static void Close(const FunctionCallbackInfo<Value>& args) {
+static void Access(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args.GetIsolate());
   HandleScope scope(env->isolate());
+
+  if (args.Length() < 2)
+    return THROW_BAD_ARGS;
+  if (!args[0]->IsString())
+    return TYPE_ERROR("path must be a string");
+  if (!args[1]->IsInt32())
+    return TYPE_ERROR("mode must be an integer");
+
+  node::Utf8Value path(args[0]);
+  int mode = static_cast<int>(args[1]->Int32Value());
+
+  if (args[2]->IsObject()) {
+    ASYNC_CALL(access, args[2], *path, mode);
+  } else {
+    SYNC_CALL(access, *path, *path, mode);
+  }
+}
+
+
+static void Close(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 1 || !args[0]->IsInt32()) {
     return THROW_BAD_ARGS;
@@ -340,7 +359,7 @@ static void Close(const FunctionCallbackInfo<Value>& args) {
 
 Local<Value> BuildStatsObject(Environment* env, const uv_stat_t* s) {
   // If you hit this assertion, you forgot to enter the v8::Context first.
-  assert(env->context() == env->isolate()->GetCurrentContext());
+  CHECK_EQ(env->context(), env->isolate()->GetCurrentContext());
 
   EscapableHandleScope handle_scope(env->isolate());
 
@@ -436,8 +455,7 @@ Local<Value> BuildStatsObject(Environment* env, const uv_stat_t* s) {
 }
 
 static void Stat(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 1)
     return TYPE_ERROR("path required");
@@ -456,8 +474,7 @@ static void Stat(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void LStat(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 1)
     return TYPE_ERROR("path required");
@@ -476,8 +493,7 @@ static void LStat(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void FStat(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 1 || !args[0]->IsInt32()) {
     return THROW_BAD_ARGS;
@@ -495,8 +511,7 @@ static void FStat(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void Symlink(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   int len = args.Length();
   if (len < 1)
@@ -531,8 +546,7 @@ static void Symlink(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void Link(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   int len = args.Length();
   if (len < 1)
@@ -555,8 +569,7 @@ static void Link(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void ReadLink(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 1)
     return TYPE_ERROR("path required");
@@ -576,8 +589,7 @@ static void ReadLink(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void Rename(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   int len = args.Length();
   if (len < 1)
@@ -600,8 +612,7 @@ static void Rename(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void FTruncate(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 2 || !args[0]->IsInt32()) {
     return THROW_BAD_ARGS;
@@ -620,8 +631,7 @@ static void FTruncate(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void Fdatasync(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 1 || !args[0]->IsInt32()) {
     return THROW_BAD_ARGS;
@@ -637,8 +647,7 @@ static void Fdatasync(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void Fsync(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 1 || !args[0]->IsInt32()) {
     return THROW_BAD_ARGS;
@@ -654,8 +663,7 @@ static void Fsync(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void Unlink(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 1)
     return TYPE_ERROR("path required");
@@ -672,8 +680,7 @@ static void Unlink(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void RMDir(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 1)
     return TYPE_ERROR("path required");
@@ -690,8 +697,7 @@ static void RMDir(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void MKDir(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 2 || !args[0]->IsString() || !args[1]->IsInt32()) {
     return THROW_BAD_ARGS;
@@ -708,8 +714,7 @@ static void MKDir(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void ReadDir(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 1)
     return TYPE_ERROR("path required");
@@ -723,7 +728,7 @@ static void ReadDir(const FunctionCallbackInfo<Value>& args) {
   } else {
     SYNC_CALL(scandir, *path, *path, 0 /*flags*/)
 
-    assert(SYNC_REQ.result >= 0);
+    CHECK_GE(SYNC_REQ.result, 0);
     int r;
     Local<Array> names = Array::New(env->isolate(), 0);
 
@@ -746,8 +751,7 @@ static void ReadDir(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void Open(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   int len = args.Length();
   if (len < 1)
@@ -786,11 +790,10 @@ static void Open(const FunctionCallbackInfo<Value>& args) {
 // 4 position  if integer, position to write at in the file.
 //             if null, write from the current position
 static void WriteBuffer(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
-  assert(args[0]->IsInt32());
-  assert(Buffer::HasInstance(args[1]));
+  CHECK(args[0]->IsInt32());
+  CHECK(Buffer::HasInstance(args[1]));
 
   int fd = args[0]->Int32Value();
   Local<Object> obj = args[1].As<Object>();
@@ -819,7 +822,7 @@ static void WriteBuffer(const FunctionCallbackInfo<Value>& args) {
     return;
   }
 
-  SYNC_CALL(write, NULL, fd, &uvbuf, 1, pos)
+  SYNC_CALL(write, nullptr, fd, &uvbuf, 1, pos)
   args.GetReturnValue().Set(SYNC_RESULT);
 }
 
@@ -833,8 +836,7 @@ static void WriteBuffer(const FunctionCallbackInfo<Value>& args) {
 //             if null, write from the current position
 // 3 enc       encoding of string
 static void WriteString(const FunctionCallbackInfo<Value>& args) {
-  HandleScope handle_scope(args.GetIsolate());
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (!args[0]->IsInt32())
     return env->ThrowTypeError("First argument must be file descriptor");
@@ -842,7 +844,7 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
   Local<Value> req;
   Local<Value> string = args[1];
   int fd = args[0]->Int32Value();
-  char* buf = NULL;
+  char* buf = nullptr;
   int64_t pos;
   size_t len;
   bool must_free = false;
@@ -866,14 +868,14 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
   uv_buf_t uvbuf = uv_buf_init(const_cast<char*>(buf), len);
 
   if (!req->IsObject()) {
-    SYNC_CALL(write, NULL, fd, &uvbuf, 1, pos)
+    SYNC_CALL(write, nullptr, fd, &uvbuf, 1, pos)
     if (must_free)
       delete[] buf;
     return args.GetReturnValue().Set(SYNC_RESULT);
   }
 
   FSReqWrap* req_wrap =
-      new FSReqWrap(env, req.As<Object>(), "write", must_free ? buf : NULL);
+      new FSReqWrap(env, req.As<Object>(), "write", must_free ? buf : nullptr);
   int err = uv_fs_write(env->event_loop(),
                         &req_wrap->req_,
                         fd,
@@ -883,10 +885,10 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
                         After);
   req_wrap->Dispatched();
   if (err < 0) {
-    uv_fs_t* req = &req_wrap->req_;
-    req->result = err;
-    req->path = NULL;
-    After(req);
+    uv_fs_t* uv_req = &req_wrap->req_;
+    uv_req->result = err;
+    uv_req->path = nullptr;
+    After(uv_req);
   }
 
   return args.GetReturnValue().Set(req_wrap->persistent());
@@ -906,8 +908,7 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
  *
  */
 static void Read(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 2 || !args[0]->IsInt32()) {
     return THROW_BAD_ARGS;
@@ -920,7 +921,7 @@ static void Read(const FunctionCallbackInfo<Value>& args) {
   size_t len;
   int64_t pos;
 
-  char * buf = NULL;
+  char * buf = nullptr;
 
   if (!Buffer::HasInstance(args[1])) {
     return env->ThrowError("Second argument needs to be a buffer");
@@ -960,8 +961,7 @@ static void Read(const FunctionCallbackInfo<Value>& args) {
  * Wrapper for chmod(1) / EIO_CHMOD
  */
 static void Chmod(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 2 || !args[0]->IsString() || !args[1]->IsInt32()) {
     return THROW_BAD_ARGS;
@@ -981,8 +981,7 @@ static void Chmod(const FunctionCallbackInfo<Value>& args) {
  * Wrapper for fchmod(1) / EIO_FCHMOD
  */
 static void FChmod(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   if (args.Length() < 2 || !args[0]->IsInt32() || !args[1]->IsInt32()) {
     return THROW_BAD_ARGS;
@@ -1002,8 +1001,7 @@ static void FChmod(const FunctionCallbackInfo<Value>& args) {
  * Wrapper for chown(1) / EIO_CHOWN
  */
 static void Chown(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   int len = args.Length();
   if (len < 1)
@@ -1035,8 +1033,7 @@ static void Chown(const FunctionCallbackInfo<Value>& args) {
  * Wrapper for fchown(1) / EIO_FCHOWN
  */
 static void FChown(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   int len = args.Length();
   if (len < 1)
@@ -1065,8 +1062,7 @@ static void FChown(const FunctionCallbackInfo<Value>& args) {
 
 
 static void UTimes(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   int len = args.Length();
   if (len < 1)
@@ -1094,8 +1090,7 @@ static void UTimes(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void FUTimes(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
-  HandleScope scope(env->isolate());
+  Environment* env = Environment::GetCurrent(args);
 
   int len = args.Length();
   if (len < 1)
@@ -1124,9 +1119,9 @@ static void FUTimes(const FunctionCallbackInfo<Value>& args) {
 
 void FSInitialize(const FunctionCallbackInfo<Value>& args) {
   Local<Function> stats_constructor = args[0].As<Function>();
-  assert(stats_constructor->IsFunction());
+  CHECK(stats_constructor->IsFunction());
 
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  Environment* env = Environment::GetCurrent(args);
   env->set_fs_stats_constructor_function(stats_constructor);
 }
 
@@ -1137,40 +1132,40 @@ void InitFs(Handle<Object> target,
   Environment* env = Environment::GetCurrent(context);
 
   // Function which creates a new Stats object.
-  target->Set(
-      FIXED_ONE_BYTE_STRING(env->isolate(), "FSInitialize"),
-      FunctionTemplate::New(env->isolate(), FSInitialize)->GetFunction());
+  target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "FSInitialize"),
+              env->NewFunctionTemplate(FSInitialize)->GetFunction());
 
-  NODE_SET_METHOD(target, "close", Close);
-  NODE_SET_METHOD(target, "open", Open);
-  NODE_SET_METHOD(target, "read", Read);
-  NODE_SET_METHOD(target, "fdatasync", Fdatasync);
-  NODE_SET_METHOD(target, "fsync", Fsync);
-  NODE_SET_METHOD(target, "rename", Rename);
-  NODE_SET_METHOD(target, "ftruncate", FTruncate);
-  NODE_SET_METHOD(target, "rmdir", RMDir);
-  NODE_SET_METHOD(target, "mkdir", MKDir);
-  NODE_SET_METHOD(target, "readdir", ReadDir);
-  NODE_SET_METHOD(target, "stat", Stat);
-  NODE_SET_METHOD(target, "lstat", LStat);
-  NODE_SET_METHOD(target, "fstat", FStat);
-  NODE_SET_METHOD(target, "link", Link);
-  NODE_SET_METHOD(target, "symlink", Symlink);
-  NODE_SET_METHOD(target, "readlink", ReadLink);
-  NODE_SET_METHOD(target, "unlink", Unlink);
-  NODE_SET_METHOD(target, "writeBuffer", WriteBuffer);
-  NODE_SET_METHOD(target, "writeString", WriteString);
+  env->SetMethod(target, "access", Access);
+  env->SetMethod(target, "close", Close);
+  env->SetMethod(target, "open", Open);
+  env->SetMethod(target, "read", Read);
+  env->SetMethod(target, "fdatasync", Fdatasync);
+  env->SetMethod(target, "fsync", Fsync);
+  env->SetMethod(target, "rename", Rename);
+  env->SetMethod(target, "ftruncate", FTruncate);
+  env->SetMethod(target, "rmdir", RMDir);
+  env->SetMethod(target, "mkdir", MKDir);
+  env->SetMethod(target, "readdir", ReadDir);
+  env->SetMethod(target, "stat", Stat);
+  env->SetMethod(target, "lstat", LStat);
+  env->SetMethod(target, "fstat", FStat);
+  env->SetMethod(target, "link", Link);
+  env->SetMethod(target, "symlink", Symlink);
+  env->SetMethod(target, "readlink", ReadLink);
+  env->SetMethod(target, "unlink", Unlink);
+  env->SetMethod(target, "writeBuffer", WriteBuffer);
+  env->SetMethod(target, "writeString", WriteString);
 
-  NODE_SET_METHOD(target, "chmod", Chmod);
-  NODE_SET_METHOD(target, "fchmod", FChmod);
-  // NODE_SET_METHOD(target, "lchmod", LChmod);
+  env->SetMethod(target, "chmod", Chmod);
+  env->SetMethod(target, "fchmod", FChmod);
+  // env->SetMethod(target, "lchmod", LChmod);
 
-  NODE_SET_METHOD(target, "chown", Chown);
-  NODE_SET_METHOD(target, "fchown", FChown);
-  // NODE_SET_METHOD(target, "lchown", LChown);
+  env->SetMethod(target, "chown", Chown);
+  env->SetMethod(target, "fchown", FChown);
+  // env->SetMethod(target, "lchown", LChown);
 
-  NODE_SET_METHOD(target, "utimes", UTimes);
-  NODE_SET_METHOD(target, "futimes", FUTimes);
+  env->SetMethod(target, "utimes", UTimes);
+  env->SetMethod(target, "futimes", FUTimes);
 
   StatWatcher::Initialize(env, target);
 

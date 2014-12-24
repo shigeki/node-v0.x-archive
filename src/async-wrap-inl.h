@@ -30,7 +30,6 @@
 #include "node_internals.h"
 #include "util.h"
 #include "util-inl.h"
-
 #include "v8.h"
 
 namespace node {
@@ -57,29 +56,25 @@ inline AsyncWrap::AsyncWrap(Environment* env,
   // If a parent value was sent then call its pre/post functions to let it know
   // a conceptual "child" is being instantiated (e.g. that a server has
   // received a connection).
-  if (parent != NULL) {
+  if (parent != nullptr) {
     parent_obj = parent->object();
-    env->async_hooks_pre_function()->Call(parent_obj, 0, NULL);
+    env->async_hooks_pre_function()->Call(parent_obj, 0, nullptr);
     if (try_catch.HasCaught())
       FatalError("node::AsyncWrap::AsyncWrap", "parent pre hook threw");
   }
 
-  env->async_hooks_init_function()->Call(object, 0, NULL);
+  env->async_hooks_init_function()->Call(object, 0, nullptr);
 
   if (try_catch.HasCaught())
     FatalError("node::AsyncWrap::AsyncWrap", "init hook threw");
 
   has_async_queue_ = true;
 
-  if (parent != NULL) {
-    env->async_hooks_post_function()->Call(parent_obj, 0, NULL);
+  if (parent != nullptr) {
+    env->async_hooks_post_function()->Call(parent_obj, 0, nullptr);
     if (try_catch.HasCaught())
       FatalError("node::AsyncWrap::AsyncWrap", "parent post hook threw");
   }
-}
-
-
-inline AsyncWrap::~AsyncWrap() {
 }
 
 
@@ -93,7 +88,7 @@ inline v8::Handle<v8::Value> AsyncWrap::MakeCallback(
     int argc,
     v8::Handle<v8::Value>* argv) {
   v8::Local<v8::Value> cb_v = object()->Get(symbol);
-  ASSERT(cb_v->IsFunction());
+  CHECK(cb_v->IsFunction());
   return MakeCallback(cb_v.As<v8::Function>(), argc, argv);
 }
 
@@ -103,7 +98,7 @@ inline v8::Handle<v8::Value> AsyncWrap::MakeCallback(
     int argc,
     v8::Handle<v8::Value>* argv) {
   v8::Local<v8::Value> cb_v = object()->Get(index);
-  ASSERT(cb_v->IsFunction());
+  CHECK(cb_v->IsFunction());
   return MakeCallback(cb_v.As<v8::Function>(), argc, argv);
 }
 

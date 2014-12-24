@@ -4,128 +4,39 @@
 
 #include "src/compiler/change-lowering.h"
 
-#include "src/compiler/common-node-cache.h"
-#include "src/compiler/graph.h"
+#include "src/code-factory.h"
+#include "src/compiler/diamond.h"
+#include "src/compiler/js-graph.h"
+#include "src/compiler/linkage.h"
+#include "src/compiler/machine-operator.h"
+#include "src/compiler/node-properties-inl.h"
 
 namespace v8 {
 namespace internal {
 namespace compiler {
 
-ChangeLoweringBase::ChangeLoweringBase(Graph* graph, Linkage* linkage,
-                                       CommonNodeCache* cache)
-    : graph_(graph),
-      isolate_(graph->zone()->isolate()),
-      linkage_(linkage),
-      cache_(cache),
-      common_(graph->zone()),
-      machine_(graph->zone()) {}
+ChangeLowering::~ChangeLowering() {}
 
 
-ChangeLoweringBase::~ChangeLoweringBase() {}
-
-
-Node* ChangeLoweringBase::ExternalConstant(ExternalReference reference) {
-  Node** loc = cache()->FindExternalConstant(reference);
-  if (*loc == NULL) {
-    *loc = graph()->NewNode(common()->ExternalConstant(reference));
-  }
-  return *loc;
-}
-
-
-Node* ChangeLoweringBase::HeapConstant(PrintableUnique<HeapObject> value) {
-  // TODO(bmeurer): Use common node cache.
-  return graph()->NewNode(common()->HeapConstant(value));
-}
-
-
-Node* ChangeLoweringBase::ImmovableHeapConstant(Handle<HeapObject> value) {
-  return HeapConstant(
-      PrintableUnique<HeapObject>::CreateImmovable(graph()->zone(), value));
-}
-
-
-Node* ChangeLoweringBase::Int32Constant(int32_t value) {
-  Node** loc = cache()->FindInt32Constant(value);
-  if (*loc == NULL) {
-    *loc = graph()->NewNode(common()->Int32Constant(value));
-  }
-  return *loc;
-}
-
-
-Node* ChangeLoweringBase::NumberConstant(double value) {
-  Node** loc = cache()->FindNumberConstant(value);
-  if (*loc == NULL) {
-    *loc = graph()->NewNode(common()->NumberConstant(value));
-  }
-  return *loc;
-}
-
-
-Node* ChangeLoweringBase::CEntryStubConstant() {
-  if (!c_entry_stub_constant_.is_set()) {
-    c_entry_stub_constant_.set(
-        ImmovableHeapConstant(CEntryStub(isolate(), 1).GetCode()));
-  }
-  return c_entry_stub_constant_.get();
-}
-
-
-Node* ChangeLoweringBase::TrueConstant() {
-  if (!true_constant_.is_set()) {
-    true_constant_.set(
-        ImmovableHeapConstant(isolate()->factory()->true_value()));
-  }
-  return true_constant_.get();
-}
-
-
-Node* ChangeLoweringBase::FalseConstant() {
-  if (!false_constant_.is_set()) {
-    false_constant_.set(
-        ImmovableHeapConstant(isolate()->factory()->false_value()));
-  }
-  return false_constant_.get();
-}
-
-
-Reduction ChangeLoweringBase::ChangeBitToBool(Node* val, Node* control) {
-  Node* branch = graph()->NewNode(common()->Branch(), val, control);
-
-  Node* if_true = graph()->NewNode(common()->IfTrue(), branch);
-  Node* true_value = TrueConstant();
-
-  Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
-  Node* false_value = FalseConstant();
-
-  Node* merge = graph()->NewNode(common()->Merge(2), if_true, if_false);
-  Node* phi =
-      graph()->NewNode(common()->Phi(2), true_value, false_value, merge);
-
-  return Replace(phi);
-}
-
-
-template <size_t kPointerSize>
-ChangeLowering<kPointerSize>::ChangeLowering(Graph* graph, Linkage* linkage)
-    : ChangeLoweringBase(graph, linkage,
-                         new (graph->zone()) CommonNodeCache(graph->zone())) {}
-
-
-template <size_t kPointerSize>
-Reduction ChangeLowering<kPointerSize>::Reduce(Node* node) {
+Reduction ChangeLowering::Reduce(Node* node) {
   Node* control = graph()->start();
-  Node* effect = control;
   switch (node->opcode()) {
     case IrOpcode::kChangeBitToBool:
       return ChangeBitToBool(node->InputAt(0), control);
     case IrOpcode::kChangeBoolToBit:
       return ChangeBoolToBit(node->InputAt(0));
+    case IrOpcode::kChangeFloat64ToTagged:
+      return ChangeFloat64ToTagged(node->InputAt(0), control);
     case IrOpcode::kChangeInt32ToTagged:
-      return ChangeInt32ToTagged(node->InputAt(0), effect, control);
+      return ChangeInt32ToTagged(node->InputAt(0), control);
     case IrOpcode::kChangeTaggedToFloat64:
-      return ChangeTaggedToFloat64(node->InputAt(0), effect, control);
+      return ChangeTaggedToFloat64(node->InputAt(0), control);
+    case IrOpcode::kChangeTaggedToInt32:
+      return ChangeTaggedToUI32(node->InputAt(0), control, kSigned);
+    case IrOpcode::kChangeTaggedToUint32:
+      return ChangeTaggedToUI32(node->InputAt(0), control, kUnsigned);
+    case IrOpcode::kChangeUint32ToTagged:
+      return ChangeUint32ToTagged(node->InputAt(0), control);
     default:
       return NoChange();
   }
@@ -134,126 +45,237 @@ Reduction ChangeLowering<kPointerSize>::Reduce(Node* node) {
 }
 
 
-template <>
-Reduction ChangeLowering<4>::ChangeBoolToBit(Node* val) {
-  return Replace(
-      graph()->NewNode(machine()->Word32Equal(), val, TrueConstant()));
+Node* ChangeLowering::HeapNumberValueIndexConstant() {
+  STATIC_ASSERT(HeapNumber::kValueOffset % kPointerSize == 0);
+  const int heap_number_value_offset =
+      ((HeapNumber::kValueOffset / kPointerSize) * (machine()->Is64() ? 8 : 4));
+  return jsgraph()->IntPtrConstant(heap_number_value_offset - kHeapObjectTag);
 }
 
 
-template <>
-Reduction ChangeLowering<8>::ChangeBoolToBit(Node* val) {
-  return Replace(
-      graph()->NewNode(machine()->Word64Equal(), val, TrueConstant()));
+Node* ChangeLowering::SmiMaxValueConstant() {
+  const int smi_value_size = machine()->Is32() ? SmiTagging<4>::SmiValueSize()
+                                               : SmiTagging<8>::SmiValueSize();
+  return jsgraph()->Int32Constant(
+      -(static_cast<int>(0xffffffffu << (smi_value_size - 1)) + 1));
 }
 
 
-template <>
-Reduction ChangeLowering<4>::ChangeInt32ToTagged(Node* val, Node* effect,
-                                                 Node* control) {
-  Node* context = NumberConstant(0);
+Node* ChangeLowering::SmiShiftBitsConstant() {
+  const int smi_shift_size = machine()->Is32() ? SmiTagging<4>::SmiShiftSize()
+                                               : SmiTagging<8>::SmiShiftSize();
+  return jsgraph()->IntPtrConstant(smi_shift_size + kSmiTagSize);
+}
 
-  Node* add = graph()->NewNode(machine()->Int32AddWithOverflow(), val, val);
+
+Node* ChangeLowering::AllocateHeapNumberWithValue(Node* value, Node* control) {
+  // The AllocateHeapNumberStub does not use the context, so we can safely pass
+  // in Smi zero here.
+  Callable callable = CodeFactory::AllocateHeapNumber(isolate());
+  CallDescriptor* descriptor = linkage()->GetStubCallDescriptor(
+      callable.descriptor(), 0, CallDescriptor::kNoFlags);
+  Node* target = jsgraph()->HeapConstant(callable.code());
+  Node* context = jsgraph()->ZeroConstant();
+  Node* effect = graph()->NewNode(common()->ValueEffect(1), value);
+  Node* heap_number = graph()->NewNode(common()->Call(descriptor), target,
+                                       context, effect, control);
+  Node* store = graph()->NewNode(
+      machine()->Store(StoreRepresentation(kMachFloat64, kNoWriteBarrier)),
+      heap_number, HeapNumberValueIndexConstant(), value, heap_number, control);
+  return graph()->NewNode(common()->Finish(1), heap_number, store);
+}
+
+
+Node* ChangeLowering::ChangeInt32ToFloat64(Node* value) {
+  return graph()->NewNode(machine()->ChangeInt32ToFloat64(), value);
+}
+
+
+Node* ChangeLowering::ChangeSmiToFloat64(Node* value) {
+  return ChangeInt32ToFloat64(ChangeSmiToInt32(value));
+}
+
+
+Node* ChangeLowering::ChangeSmiToInt32(Node* value) {
+  value = graph()->NewNode(machine()->WordSar(), value, SmiShiftBitsConstant());
+  if (machine()->Is64()) {
+    value = graph()->NewNode(machine()->TruncateInt64ToInt32(), value);
+  }
+  return value;
+}
+
+
+Node* ChangeLowering::ChangeUint32ToFloat64(Node* value) {
+  return graph()->NewNode(machine()->ChangeUint32ToFloat64(), value);
+}
+
+
+Node* ChangeLowering::ChangeUint32ToSmi(Node* value) {
+  if (machine()->Is64()) {
+    value = graph()->NewNode(machine()->ChangeUint32ToUint64(), value);
+  }
+  return graph()->NewNode(machine()->WordShl(), value, SmiShiftBitsConstant());
+}
+
+
+Node* ChangeLowering::LoadHeapNumberValue(Node* value, Node* control) {
+  return graph()->NewNode(machine()->Load(kMachFloat64), value,
+                          HeapNumberValueIndexConstant(), graph()->start(),
+                          control);
+}
+
+
+Node* ChangeLowering::TestNotSmi(Node* value) {
+  STATIC_ASSERT(kSmiTag == 0);
+  STATIC_ASSERT(kSmiTagMask == 1);
+  return graph()->NewNode(machine()->WordAnd(), value,
+                          jsgraph()->IntPtrConstant(kSmiTagMask));
+}
+
+
+Node* ChangeLowering::Uint32LessThanOrEqual(Node* lhs, Node* rhs) {
+  return graph()->NewNode(machine()->Uint32LessThanOrEqual(), lhs, rhs);
+}
+
+
+Reduction ChangeLowering::ChangeBitToBool(Node* val, Node* control) {
+  MachineType const type = static_cast<MachineType>(kTypeBool | kRepTagged);
+  return Replace(graph()->NewNode(common()->Select(type), val,
+                                  jsgraph()->TrueConstant(),
+                                  jsgraph()->FalseConstant()));
+}
+
+
+Reduction ChangeLowering::ChangeBoolToBit(Node* val) {
+  return Replace(
+      graph()->NewNode(machine()->WordEqual(), val, jsgraph()->TrueConstant()));
+}
+
+
+Reduction ChangeLowering::ChangeFloat64ToTagged(Node* val, Node* control) {
+  return Replace(AllocateHeapNumberWithValue(val, control));
+}
+
+
+Reduction ChangeLowering::ChangeInt32ToTagged(Node* value, Node* control) {
+  if (machine()->Is64()) {
+    return Replace(graph()->NewNode(
+        machine()->Word64Shl(),
+        graph()->NewNode(machine()->ChangeInt32ToInt64(), value),
+        SmiShiftBitsConstant()));
+  }
+
+  Node* add = graph()->NewNode(machine()->Int32AddWithOverflow(), value, value);
   Node* ovf = graph()->NewNode(common()->Projection(1), add);
 
-  Node* branch = graph()->NewNode(common()->Branch(), ovf, control);
-
-  Node* if_true = graph()->NewNode(common()->IfTrue(), branch);
-  Node* number = graph()->NewNode(machine()->ChangeInt32ToFloat64(), val);
-
-  // TODO(bmeurer): Inline allocation if possible.
-  const Runtime::Function* fn =
-      Runtime::FunctionForId(Runtime::kAllocateHeapNumber);
-  DCHECK_EQ(0, fn->nargs);
-  CallDescriptor* desc = linkage()->GetRuntimeCallDescriptor(
-      fn->function_id, 0, Operator::kNoProperties);
-  Node* heap_number =
-      graph()->NewNode(common()->Call(desc), CEntryStubConstant(),
-                       ExternalConstant(ExternalReference(fn, isolate())),
-                       Int32Constant(0), context, effect, if_true);
-
-  Node* store = graph()->NewNode(
-      machine()->Store(kMachineFloat64, kNoWriteBarrier), heap_number,
-      Int32Constant(HeapNumber::kValueOffset - kHeapObjectTag), number, effect,
-      heap_number);
-
-  Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
-  Node* smi = graph()->NewNode(common()->Projection(0), add);
-
-  Node* merge = graph()->NewNode(common()->Merge(2), store, if_false);
-  Node* phi = graph()->NewNode(common()->Phi(2), heap_number, smi, merge);
-
-  return Replace(phi);
+  Diamond d(graph(), common(), ovf, BranchHint::kFalse);
+  d.Chain(control);
+  return Replace(
+      d.Phi(kMachAnyTagged,
+            AllocateHeapNumberWithValue(ChangeInt32ToFloat64(value), d.if_true),
+            graph()->NewNode(common()->Projection(0), add)));
 }
 
 
-template <>
-Reduction ChangeLowering<8>::ChangeInt32ToTagged(Node* val, Node* effect,
-                                                 Node* control) {
-  return Replace(graph()->NewNode(
-      machine()->Word64Shl(), val,
-      Int32Constant(SmiTagging<8>::kSmiShiftSize + kSmiTagSize)));
+Reduction ChangeLowering::ChangeTaggedToUI32(Node* value, Node* control,
+                                             Signedness signedness) {
+  const MachineType type = (signedness == kSigned) ? kMachInt32 : kMachUint32;
+  const Operator* op = (signedness == kSigned)
+                           ? machine()->ChangeFloat64ToInt32()
+                           : machine()->ChangeFloat64ToUint32();
+  Diamond d(graph(), common(), TestNotSmi(value), BranchHint::kFalse);
+  d.Chain(control);
+  return Replace(
+      d.Phi(type, graph()->NewNode(op, LoadHeapNumberValue(value, d.if_true)),
+            ChangeSmiToInt32(value)));
 }
 
 
-template <>
-Reduction ChangeLowering<4>::ChangeTaggedToFloat64(Node* val, Node* effect,
-                                                   Node* control) {
-  Node* branch = graph()->NewNode(
-      common()->Branch(),
-      graph()->NewNode(machine()->Word32And(), val, Int32Constant(kSmiTagMask)),
-      control);
+namespace {
 
-  Node* if_true = graph()->NewNode(common()->IfTrue(), branch);
-  Node* load = graph()->NewNode(
-      machine()->Load(kMachineFloat64), val,
-      Int32Constant(HeapNumber::kValueOffset - kHeapObjectTag), if_true);
+bool CanCover(Node* value, IrOpcode::Value opcode) {
+  if (value->opcode() != opcode) return false;
+  bool first = true;
+  for (auto i = value->uses().begin(); i != value->uses().end(); ++i) {
+    if (NodeProperties::IsEffectEdge(i.edge())) continue;
+    DCHECK(NodeProperties::IsValueEdge(i.edge()));
+    if (!first) return false;
+    first = false;
+  }
+  return true;
+}
 
-  Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
-  Node* number = graph()->NewNode(
-      machine()->ChangeInt32ToFloat64(),
-      graph()->NewNode(
-          machine()->Word32Sar(), val,
-          Int32Constant(SmiTagging<4>::kSmiShiftSize + kSmiTagSize)));
+}  // namespace
 
-  Node* merge = graph()->NewNode(common()->Merge(2), if_true, if_false);
-  Node* phi = graph()->NewNode(common()->Phi(2), load, number, merge);
 
-  return Replace(phi);
+Reduction ChangeLowering::ChangeTaggedToFloat64(Node* value, Node* control) {
+  if (CanCover(value, IrOpcode::kJSToNumber)) {
+    // ChangeTaggedToFloat64(JSToNumber(x)) =>
+    //   if IsSmi(x) then ChangeSmiToFloat64(x)
+    //   else let y = JSToNumber(x) in
+    //     if IsSmi(y) then ChangeSmiToFloat64(y)
+    //     else LoadHeapNumberValue(y)
+    Node* const object = NodeProperties::GetValueInput(value, 0);
+    Node* const context = NodeProperties::GetContextInput(value);
+    Node* const effect = NodeProperties::GetEffectInput(value);
+    Node* const control = NodeProperties::GetControlInput(value);
+
+    Diamond d1(graph(), common(), TestNotSmi(object), BranchHint::kFalse);
+    d1.Chain(control);
+
+    Node* number =
+        graph()->NewNode(value->op(), object, context, effect, d1.if_true);
+    Diamond d2(graph(), common(), TestNotSmi(number));
+    d2.Nest(d1, true);
+    Node* phi2 = d2.Phi(kMachFloat64, LoadHeapNumberValue(number, d2.if_true),
+                        ChangeSmiToFloat64(number));
+
+    Node* phi1 = d1.Phi(kMachFloat64, phi2, ChangeSmiToFloat64(object));
+    Node* ephi1 = d1.EffectPhi(number, effect);
+
+    for (auto i = value->uses().begin(); i != value->uses().end();) {
+      if (NodeProperties::IsEffectEdge(i.edge())) {
+        i.UpdateToAndIncrement(ephi1);
+      } else {
+        ++i;
+      }
+    }
+    return Replace(phi1);
+  }
+
+  Diamond d(graph(), common(), TestNotSmi(value), BranchHint::kFalse);
+  d.Chain(control);
+  Node* load = LoadHeapNumberValue(value, d.if_true);
+  Node* number = ChangeSmiToFloat64(value);
+  return Replace(d.Phi(kMachFloat64, load, number));
 }
 
 
-template <>
-Reduction ChangeLowering<8>::ChangeTaggedToFloat64(Node* val, Node* effect,
-                                                   Node* control) {
-  Node* branch = graph()->NewNode(
-      common()->Branch(),
-      graph()->NewNode(machine()->Word64And(), val, Int32Constant(kSmiTagMask)),
-      control);
-
-  Node* if_true = graph()->NewNode(common()->IfTrue(), branch);
-  Node* load = graph()->NewNode(
-      machine()->Load(kMachineFloat64), val,
-      Int32Constant(HeapNumber::kValueOffset - kHeapObjectTag), if_true);
-
-  Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
-  Node* number = graph()->NewNode(
-      machine()->ChangeInt32ToFloat64(),
-      graph()->NewNode(
-          machine()->ConvertInt64ToInt32(),
-          graph()->NewNode(
-              machine()->Word64Sar(), val,
-              Int32Constant(SmiTagging<8>::kSmiShiftSize + kSmiTagSize))));
-
-  Node* merge = graph()->NewNode(common()->Merge(2), if_true, if_false);
-  Node* phi = graph()->NewNode(common()->Phi(2), load, number, merge);
-
-  return Replace(phi);
+Reduction ChangeLowering::ChangeUint32ToTagged(Node* value, Node* control) {
+  Diamond d(graph(), common(),
+            Uint32LessThanOrEqual(value, SmiMaxValueConstant()),
+            BranchHint::kTrue);
+  d.Chain(control);
+  return Replace(d.Phi(
+      kMachAnyTagged, ChangeUint32ToSmi(value),
+      AllocateHeapNumberWithValue(ChangeUint32ToFloat64(value), d.if_false)));
 }
 
 
-template class ChangeLowering<4>;
-template class ChangeLowering<8>;
+Isolate* ChangeLowering::isolate() const { return jsgraph()->isolate(); }
+
+
+Graph* ChangeLowering::graph() const { return jsgraph()->graph(); }
+
+
+CommonOperatorBuilder* ChangeLowering::common() const {
+  return jsgraph()->common();
+}
+
+
+MachineOperatorBuilder* ChangeLowering::machine() const {
+  return jsgraph()->machine();
+}
 
 }  // namespace compiler
 }  // namespace internal

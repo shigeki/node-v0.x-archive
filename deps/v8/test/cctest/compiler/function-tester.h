@@ -8,7 +8,9 @@
 #include "src/v8.h"
 #include "test/cctest/cctest.h"
 
+#include "src/ast-numbering.h"
 #include "src/compiler.h"
+#include "src/compiler/linkage.h"
 #include "src/compiler/pipeline.h"
 #include "src/execution.h"
 #include "src/full-codegen.h"
@@ -26,66 +28,26 @@ namespace compiler {
 
 class FunctionTester : public InitializedHandleScope {
  public:
-  explicit FunctionTester(const char* source)
+  explicit FunctionTester(const char* source, uint32_t flags = 0)
       : isolate(main_isolate()),
-        function((FLAG_allow_natives_syntax = true, NewFunction(source))) {
+        function((FLAG_allow_natives_syntax = true, NewFunction(source))),
+        flags_(flags) {
     Compile(function);
+    const uint32_t supported_flags = CompilationInfo::kContextSpecializing |
+                                     CompilationInfo::kInliningEnabled |
+                                     CompilationInfo::kTypingEnabled;
+    CHECK_EQ(0, flags_ & ~supported_flags);
+  }
+
+  explicit FunctionTester(Graph* graph)
+      : isolate(main_isolate()),
+        function(NewFunction("(function(a,b){})")),
+        flags_(0) {
+    CompileGraph(graph);
   }
 
   Isolate* isolate;
   Handle<JSFunction> function;
-
-  Handle<JSFunction> Compile(Handle<JSFunction> function) {
-#if V8_TURBOFAN_TARGET
-    CompilationInfoWithZone info(function);
-
-    CHECK(Parser::Parse(&info));
-    StrictMode strict_mode = info.function()->strict_mode();
-    info.SetStrictMode(strict_mode);
-    info.SetOptimizing(BailoutId::None(), Handle<Code>(function->code()));
-    CHECK(Rewriter::Rewrite(&info));
-    CHECK(Scope::Analyze(&info));
-    CHECK_NE(NULL, info.scope());
-
-    EnsureDeoptimizationSupport(&info);
-
-    Pipeline pipeline(&info);
-    Handle<Code> code = pipeline.GenerateCode();
-
-    CHECK(!code.is_null());
-    function->ReplaceCode(*code);
-#elif USE_CRANKSHAFT
-    Handle<Code> unoptimized = Handle<Code>(function->code());
-    Handle<Code> code = Compiler::GetOptimizedCode(function, unoptimized,
-                                                   Compiler::NOT_CONCURRENT);
-    CHECK(!code.is_null());
-#if ENABLE_DISASSEMBLER
-    if (FLAG_print_opt_code) {
-      CodeTracer::Scope tracing_scope(isolate->GetCodeTracer());
-      code->Disassemble("test code", tracing_scope.file());
-    }
-#endif
-    function->ReplaceCode(*code);
-#endif
-    return function;
-  }
-
-  static void EnsureDeoptimizationSupport(CompilationInfo* info) {
-    bool should_recompile = !info->shared_info()->has_deoptimization_support();
-    if (should_recompile) {
-      CompilationInfoWithZone unoptimized(info->shared_info());
-      // Note that we use the same AST that we will use for generating the
-      // optimized code.
-      unoptimized.SetFunction(info->function());
-      unoptimized.PrepareForCompilation(info->scope());
-      unoptimized.SetContext(info->context());
-      if (should_recompile) unoptimized.EnableDeoptimizationSupport();
-      bool succeeded = FullCodeGenerator::MakeCode(&unoptimized);
-      CHECK(succeeded);
-      Handle<SharedFunctionInfo> shared = info->shared_info();
-      shared->EnableDeoptimizationSupport(*unoptimized.code());
-    }
-  }
 
   MaybeHandle<Object> Call(Handle<Object> a, Handle<Object> b) {
     Handle<Object> args[] = {a, b};
@@ -186,6 +148,81 @@ class FunctionTester : public InitializedHandleScope {
   Handle<Object> true_value() { return isolate->factory()->true_value(); }
 
   Handle<Object> false_value() { return isolate->factory()->false_value(); }
+
+  Handle<JSFunction> Compile(Handle<JSFunction> function) {
+// TODO(titzer): make this method private.
+#if V8_TURBOFAN_TARGET
+    CompilationInfoWithZone info(function);
+
+    CHECK(Parser::Parse(&info));
+    info.SetOptimizing(BailoutId::None(), Handle<Code>(function->code()));
+    if (flags_ & CompilationInfo::kContextSpecializing) {
+      info.MarkAsContextSpecializing();
+    }
+    if (flags_ & CompilationInfo::kInliningEnabled) {
+      info.MarkAsInliningEnabled();
+    }
+    if (flags_ & CompilationInfo::kTypingEnabled) {
+      info.MarkAsTypingEnabled();
+    }
+    CHECK(Compiler::Analyze(&info));
+    CHECK(Compiler::EnsureDeoptimizationSupport(&info));
+
+    Pipeline pipeline(&info);
+    Handle<Code> code = pipeline.GenerateCode();
+    if (FLAG_turbo_deoptimization) {
+      info.context()->native_context()->AddOptimizedCode(*code);
+    }
+
+    CHECK(!code.is_null());
+    function->ReplaceCode(*code);
+#elif USE_CRANKSHAFT
+    Handle<Code> unoptimized = Handle<Code>(function->code());
+    Handle<Code> code = Compiler::GetOptimizedCode(function, unoptimized,
+                                                   Compiler::NOT_CONCURRENT);
+    CHECK(!code.is_null());
+#if ENABLE_DISASSEMBLER
+    if (FLAG_print_opt_code) {
+      CodeTracer::Scope tracing_scope(isolate->GetCodeTracer());
+      code->Disassemble("test code", tracing_scope.file());
+    }
+#endif
+    function->ReplaceCode(*code);
+#endif
+    return function;
+  }
+
+  static Handle<JSFunction> ForMachineGraph(Graph* graph) {
+    JSFunction* p = NULL;
+    {  // because of the implicit handle scope of FunctionTester.
+      FunctionTester f(graph);
+      p = *f.function;
+    }
+    return Handle<JSFunction>(p);  // allocated in outer handle scope.
+  }
+
+ private:
+  uint32_t flags_;
+
+  // Compile the given machine graph instead of the source of the function
+  // and replace the JSFunction's code with the result.
+  Handle<JSFunction> CompileGraph(Graph* graph) {
+    CHECK(Pipeline::SupportedTarget());
+    CompilationInfoWithZone info(function);
+
+    CHECK(Parser::Parse(&info));
+    info.SetOptimizing(BailoutId::None(),
+                       Handle<Code>(function->shared()->code()));
+    CHECK(Compiler::Analyze(&info));
+    CHECK(Compiler::EnsureDeoptimizationSupport(&info));
+
+    Pipeline pipeline(&info);
+    Linkage linkage(info.zone(), &info);
+    Handle<Code> code = pipeline.GenerateCodeForMachineGraph(&linkage, graph);
+    CHECK(!code.is_null());
+    function->ReplaceCode(*code);
+    return function;
+  }
 };
 }
 }

@@ -15,27 +15,16 @@
 #endif  // MINGW_HAS_SECURE_API
 #endif  // __MINGW32__
 
-#ifdef _MSC_VER
 #include <limits>
-#endif
 
 #include "src/base/win32-headers.h"
 
+#include "src/base/bits.h"
 #include "src/base/lazy-instance.h"
 #include "src/base/macros.h"
 #include "src/base/platform/platform.h"
 #include "src/base/platform/time.h"
 #include "src/base/utils/random-number-generator.h"
-
-#ifdef _MSC_VER
-
-// Case-insensitive bounded string comparisons. Use stricmp() on Win32. Usually
-// defined in strings.h.
-int strncasecmp(const char* s1, const char* s2, int n) {
-  return _strnicmp(s1, s2, n);
-}
-
-#endif  // _MSC_VER
 
 
 // Extra functions for MinGW. Most of these are the _s functions which are in
@@ -112,11 +101,6 @@ namespace {
 bool g_hard_abort = false;
 
 }  // namespace
-
-intptr_t OS::MaxVirtualMemory() {
-  return 0;
-}
-
 
 class TimezoneCache {
  public:
@@ -362,41 +346,26 @@ void Win32Time::SetToCurrentTime() {
 }
 
 
+int64_t FileTimeToInt64(FILETIME ft) {
+  ULARGE_INTEGER result;
+  result.LowPart = ft.dwLowDateTime;
+  result.HighPart = ft.dwHighDateTime;
+  return static_cast<int64_t>(result.QuadPart);
+}
+
+
 // Return the local timezone offset in milliseconds east of UTC. This
 // takes into account whether daylight saving is in effect at the time.
 // Only times in the 32-bit Unix range may be passed to this function.
 // Also, adding the time-zone offset to the input must not overflow.
 // The function EquivalentTime() in date.js guarantees this.
 int64_t Win32Time::LocalOffset(TimezoneCache* cache) {
-  cache->InitializeIfNeeded();
-
-  Win32Time rounded_to_second(*this);
-  rounded_to_second.t() = rounded_to_second.t() / 1000 / kTimeScaler *
-      1000 * kTimeScaler;
-  // Convert to local time using POSIX localtime function.
-  // Windows XP Service Pack 3 made SystemTimeToTzSpecificLocalTime()
-  // very slow.  Other browsers use localtime().
-
-  // Convert from JavaScript milliseconds past 1/1/1970 0:00:00 to
-  // POSIX seconds past 1/1/1970 0:00:00.
-  double unchecked_posix_time = rounded_to_second.ToJSTime() / 1000;
-  if (unchecked_posix_time > INT_MAX || unchecked_posix_time < 0) {
-    return 0;
-  }
-  // Because _USE_32BIT_TIME_T is defined, time_t is a 32-bit int.
-  time_t posix_time = static_cast<time_t>(unchecked_posix_time);
-
-  // Convert to local time, as struct with fields for day, hour, year, etc.
-  tm posix_local_time_struct;
-  if (localtime_s(&posix_local_time_struct, &posix_time)) return 0;
-
-  if (posix_local_time_struct.tm_isdst > 0) {
-    return (cache->tzinfo_.Bias + cache->tzinfo_.DaylightBias) * -kMsPerMinute;
-  } else if (posix_local_time_struct.tm_isdst == 0) {
-    return (cache->tzinfo_.Bias + cache->tzinfo_.StandardBias) * -kMsPerMinute;
-  } else {
-    return cache->tzinfo_.Bias * -kMsPerMinute;
-  }
+  FILETIME local;
+  SYSTEMTIME system_utc, system_local;
+  FileTimeToSystemTime(&time_.ft_, &system_utc);
+  SystemTimeToTzSpecificLocalTime(NULL, &system_utc, &system_local);
+  SystemTimeToFileTime(&system_local, &local);
+  return (FileTimeToInt64(local) - FileTimeToInt64(time_.ft_)) / kTimeScaler;
 }
 
 
@@ -705,7 +674,7 @@ static size_t GetPageSize() {
   if (page_size == 0) {
     SYSTEM_INFO info;
     GetSystemInfo(&info);
-    page_size = RoundUpToPowerOf2(info.dwPageSize);
+    page_size = base::bits::RoundUpToPowerOfTwo32(info.dwPageSize);
   }
   return page_size;
 }
@@ -790,7 +759,7 @@ void* OS::Allocate(const size_t requested,
 
   if (mbase == NULL) return NULL;
 
-  DCHECK(IsAligned(reinterpret_cast<size_t>(mbase), OS::AllocateAlignment()));
+  DCHECK((reinterpret_cast<uintptr_t>(mbase) % OS::AllocateAlignment()) == 0);
 
   *allocated = msize;
   return mbase;
@@ -836,7 +805,7 @@ void OS::Abort() {
 
 
 void OS::DebugBreak() {
-#ifdef _MSC_VER
+#if V8_CC_MSVC
   // To avoid Visual Studio runtime support the following code can be used
   // instead
   // __asm { int 3 }
@@ -1168,18 +1137,6 @@ void OS::SignalCodeMovingGC() {
 }
 
 
-uint64_t OS::TotalPhysicalMemory() {
-  MEMORYSTATUSEX memory_info;
-  memory_info.dwLength = sizeof(memory_info);
-  if (!GlobalMemoryStatusEx(&memory_info)) {
-    UNREACHABLE();
-    return 0;
-  }
-
-  return static_cast<uint64_t>(memory_info.ullTotalPhys);
-}
-
-
 #else  // __MINGW32__
 std::vector<OS::SharedLibraryAddress> OS::GetSharedLibraryAddresses() {
   return std::vector<OS::SharedLibraryAddress>();
@@ -1190,19 +1147,8 @@ void OS::SignalCodeMovingGC() { }
 #endif  // __MINGW32__
 
 
-int OS::NumberOfProcessorsOnline() {
-  SYSTEM_INFO info;
-  GetSystemInfo(&info);
-  return info.dwNumberOfProcessors;
-}
-
-
 double OS::nan_value() {
-#ifdef _MSC_VER
   return std::numeric_limits<double>::quiet_NaN();
-#else  // _MSC_VER
-  return NAN;
-#endif  // _MSC_VER
 }
 
 
@@ -1228,7 +1174,7 @@ VirtualMemory::VirtualMemory(size_t size)
 
 VirtualMemory::VirtualMemory(size_t size, size_t alignment)
     : address_(NULL), size_(0) {
-  DCHECK(IsAligned(alignment, static_cast<intptr_t>(OS::AllocateAlignment())));
+  DCHECK((alignment % OS::AllocateAlignment()) == 0);
   size_t request_size = RoundUp(size + alignment,
                                 static_cast<intptr_t>(OS::AllocateAlignment()));
   void* address = ReserveRegion(request_size);

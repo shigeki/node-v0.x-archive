@@ -23,12 +23,12 @@
 #define SRC_ENV_H_
 
 #include "ares.h"
+#include "debug-agent.h"
 #include "tree.h"
 #include "util.h"
 #include "uv.h"
 #include "v8.h"
 #include "queue.h"
-#include "debugger-agent.h"
 
 #include <stdint.h>
 
@@ -258,7 +258,6 @@ namespace node {
   V(context, v8::Context)                                                     \
   V(domain_array, v8::Array)                                                  \
   V(fs_stats_constructor_function, v8::Function)                              \
-  V(gc_info_callback_function, v8::Function)                                  \
   V(module_load_list_array, v8::Array)                                        \
   V(pipe_constructor_template, v8::FunctionTemplate)                          \
   V(process_object, v8::Object)                                               \
@@ -379,16 +378,16 @@ class Environment {
 
   static inline Environment* GetCurrent(v8::Isolate* isolate);
   static inline Environment* GetCurrent(v8::Local<v8::Context> context);
+  static inline Environment* GetCurrent(
+      const v8::FunctionCallbackInfo<v8::Value>& info);
+  static inline Environment* GetCurrent(
+      const v8::PropertyCallbackInfo<v8::Value>& info);
 
   // See CreateEnvironment() in src/node.cc.
   static inline Environment* New(v8::Local<v8::Context> context,
                                  uv_loop_t* loop);
   inline void CleanupHandles();
   inline void Dispose();
-
-  // Defined in src/node_profiler.cc.
-  void StartGarbageCollectionTracking(v8::Local<v8::Function> callback);
-  void StopGarbageCollectionTracking();
 
   void AssignToContext(v8::Local<v8::Context> context);
 
@@ -437,18 +436,35 @@ class Environment {
   inline void ThrowTypeError(const char* errmsg);
   inline void ThrowRangeError(const char* errmsg);
   inline void ThrowErrnoException(int errorno,
-                                  const char* syscall = NULL,
-                                  const char* message = NULL,
-                                  const char* path = NULL);
+                                  const char* syscall = nullptr,
+                                  const char* message = nullptr,
+                                  const char* path = nullptr);
   inline void ThrowUVException(int errorno,
-                               const char* syscall = NULL,
-                               const char* message = NULL,
-                               const char* path = NULL);
+                               const char* syscall = nullptr,
+                               const char* message = nullptr,
+                               const char* path = nullptr);
 
   // Convenience methods for contextify
   inline static void ThrowError(v8::Isolate* isolate, const char* errmsg);
   inline static void ThrowTypeError(v8::Isolate* isolate, const char* errmsg);
   inline static void ThrowRangeError(v8::Isolate* isolate, const char* errmsg);
+
+  inline v8::Local<v8::FunctionTemplate>
+      NewFunctionTemplate(v8::FunctionCallback callback,
+                          v8::Local<v8::Signature> signature =
+                              v8::Local<v8::Signature>());
+
+  // Convenience methods for NewFunctionTemplate().
+  inline void SetMethod(v8::Local<v8::Object> that,
+                        const char* name,
+                        v8::FunctionCallback callback);
+  inline void SetProtoMethod(v8::Local<v8::FunctionTemplate> that,
+                             const char* name,
+                             v8::FunctionCallback callback);
+  inline void SetTemplateMethod(v8::Local<v8::FunctionTemplate> that,
+                                const char* name,
+                                v8::FunctionCallback callback);
+
 
   // Strings are shared across shared contexts. The getters simply proxy to
   // the per-isolate primitive.
@@ -473,13 +489,10 @@ class Environment {
  private:
   static const int kIsolateSlot = NODE_ISOLATE_SLOT;
 
-  class GCInfo;
   class IsolateData;
   inline Environment(v8::Local<v8::Context> context, uv_loop_t* loop);
   inline ~Environment();
   inline IsolateData* isolate_data() const;
-  void AfterGarbageCollectionCallback(const GCInfo* before,
-                                      const GCInfo* after);
 
   enum ContextEmbedderDataIndex {
     kContextEmbedderDataIndex = NODE_CONTEXT_EMBEDDER_DATA_INDEX
@@ -499,7 +512,6 @@ class Environment {
   ares_task_list cares_task_list_;
   bool using_smalloc_alloc_cb_;
   bool using_domains_;
-  QUEUE gc_tracker_queue_;
   bool printed_error_;
   debugger::Agent debugger_agent_;
 
@@ -508,30 +520,12 @@ class Environment {
   QUEUE handle_cleanup_queue_;
   int handle_cleanup_waiting_;
 
+  v8::Persistent<v8::External> external_;
+
 #define V(PropertyName, TypeName)                                             \
   v8::Persistent<TypeName> PropertyName ## _;
   ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES(V)
 #undef V
-
-  class GCInfo {
-   public:
-    inline GCInfo();
-    inline GCInfo(v8::Isolate* isolate,
-                  v8::GCType type,
-                  v8::GCCallbackFlags flags,
-                  uint64_t timestamp);
-    inline v8::GCType type() const;
-    inline v8::GCCallbackFlags flags() const;
-    // TODO(bnoordhuis) Const-ify once https://codereview.chromium.org/63693005
-    // lands and makes it way into a stable release.
-    inline v8::HeapStatistics* stats() const;
-    inline uint64_t timestamp() const;
-   private:
-    v8::GCType type_;
-    v8::GCCallbackFlags flags_;
-    v8::HeapStatistics stats_;
-    uint64_t timestamp_;
-  };
 
   // Per-thread, reference-counted singleton.
   class IsolateData {
@@ -540,10 +534,6 @@ class Environment {
                                            uv_loop_t* loop);
     inline void Put();
     inline uv_loop_t* event_loop() const;
-
-    // Defined in src/node_profiler.cc.
-    void StartGarbageCollectionTracking(Environment* env);
-    void StopGarbageCollectionTracking(Environment* env);
 
 #define V(PropertyName, StringValue)                                          \
     inline v8::Local<v8::String> PropertyName() const;
@@ -555,16 +545,6 @@ class Environment {
     inline explicit IsolateData(v8::Isolate* isolate, uv_loop_t* loop);
     inline v8::Isolate* isolate() const;
 
-    // Defined in src/node_profiler.cc.
-    static void BeforeGarbageCollection(v8::Isolate* isolate,
-                                        v8::GCType type,
-                                        v8::GCCallbackFlags flags);
-    static void AfterGarbageCollection(v8::Isolate* isolate,
-                                       v8::GCType type,
-                                       v8::GCCallbackFlags flags);
-    void BeforeGarbageCollection(v8::GCType type, v8::GCCallbackFlags flags);
-    void AfterGarbageCollection(v8::GCType type, v8::GCCallbackFlags flags);
-
     uv_loop_t* const event_loop_;
     v8::Isolate* const isolate_;
 
@@ -574,9 +554,6 @@ class Environment {
 #undef V
 
     unsigned int ref_count_;
-    QUEUE gc_tracker_queue_;
-    GCInfo gc_info_before_;
-    GCInfo gc_info_after_;
 
     DISALLOW_COPY_AND_ASSIGN(IsolateData);
   };

@@ -59,7 +59,7 @@ class WriteWrap: public ReqWrap<uv_write_t> {
 
   // This is just to keep the compiler happy. It should never be called, since
   // we don't use exceptions in node.
-  void operator delete(void* ptr, char* storage) { assert(0); }
+  void operator delete(void* ptr, char* storage) { UNREACHABLE(); }
 
   inline StreamWrap* wrap() const {
     return wrap_;
@@ -72,8 +72,8 @@ class WriteWrap: public ReqWrap<uv_write_t> {
  private:
   // People should not be using the non-placement new and delete operator on a
   // WriteWrap. Ensure this never happens.
-  void* operator new(size_t size) { assert(0); }
-  void operator delete(void* ptr) { assert(0); }
+  void* operator new(size_t size) { UNREACHABLE(); }
+  void operator delete(void* ptr) { UNREACHABLE(); }
 
   StreamWrap* const wrap_;
 };
@@ -87,10 +87,10 @@ class StreamWrapCallbacks {
   explicit StreamWrapCallbacks(StreamWrapCallbacks* old) : wrap_(old->wrap()) {
   }
 
-  virtual ~StreamWrapCallbacks() {
-  }
+  virtual ~StreamWrapCallbacks() = default;
 
-  virtual const char* Error();
+  virtual const char* Error() const;
+  virtual void ClearError();
 
   virtual int TryWrite(uv_buf_t** bufs, size_t* count);
 
@@ -178,13 +178,13 @@ class StreamWrap : public HandleWrap {
              v8::Local<v8::Object> object,
              uv_stream_t* stream,
              AsyncWrap::ProviderType provider,
-             AsyncWrap* parent = NULL);
+             AsyncWrap* parent = nullptr);
 
   ~StreamWrap() {
     if (!callbacks_gc_ && callbacks_ != &default_callbacks_) {
       delete callbacks_;
     }
-    callbacks_ = NULL;
+    callbacks_ = nullptr;
   }
 
   void StateChange() { }

@@ -1,15 +1,30 @@
-Evented I/O for V8 javascript.
+io.js
 ===
+[![Gitter](https://badges.gitter.im/Join Chat.svg)](https://gitter.im/iojs/io.js?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+
+This repository began as a GitHub fork of
+[joyent/node](https://github.com/joyent/node).
+io.js contributions, releases, and contributorship are under an
+[open governance model](./CONTRIBUTING.md#governance).
+We intend to land, with increasing regularity, releases which are
+compatible with the npm ecosystem that has been built to date for node.js.
+
+### Is it io.js or IO.js or iojs or IOjs or iOjS?
+
+The official name is **io.js**, which should never be capitalized,
+especially not at the start of a sentence, unless it is being
+displayed in a location that is customarily all-caps (such as
+the title of man pages.)
 
 ### To build:
 
 Prerequisites (Unix only):
 
-    * GCC 4.2 or newer
-    * G++ 4.2 or newer
-    * Python 2.6 or 2.7
-    * GNU Make 3.81 or newer
-    * libexecinfo (FreeBSD and OpenBSD only)
+* `gcc` and `g++` 4.8 or newer, or
+* `clang` and `clang++` 3.3 or newer
+* Python 2.6 or 2.7
+* GNU Make 3.81 or newer
+* libexecinfo (FreeBSD and OpenBSD only)
 
 Unix/Macintosh:
 
@@ -31,8 +46,9 @@ make install
 
 Prerequisites (Windows only):
 
-    * Python 2.6 or 2.7
-    * Visual Studio 2010 or 2012
+* Python 2.6 or 2.7
+* Visual Studio 2013 for Windows Desktop, or
+* Visual Studio Express 2013 for Windows Desktop
 
 Windows:
 
@@ -121,7 +137,7 @@ Resources for Newcomers
   - [searching the npm registry](http://npmjs.org/)
   - [list of companies and projects using node](https://github.com/joyent/node/wiki/Projects,-Applications,-and-Companies-Using-Node)
   - [node.js mailing list](http://groups.google.com/group/nodejs)
-  - irc chatroom, [#node.js on freenode.net](http://webchat.freenode.net?channels=node.js&uio=d4)
+  - irc chatroom, [#io.js on freenode.net](http://webchat.freenode.net?channels=io.js&uio=d4)
   - [community](https://github.com/joyent/node/wiki/Community)
   - [contributing](https://github.com/joyent/node/wiki/Contributing)
   - [big list of all the helpful wiki pages](https://github.com/joyent/node/wiki/_pages)

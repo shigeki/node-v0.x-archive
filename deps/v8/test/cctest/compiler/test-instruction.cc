@@ -9,6 +9,7 @@
 #include "src/compiler/common-operator.h"
 #include "src/compiler/graph.h"
 #include "src/compiler/instruction.h"
+#include "src/compiler/linkage.h"
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node.h"
 #include "src/compiler/operator.h"
@@ -30,9 +31,8 @@ class InstructionTester : public HandleAndZoneScope {
         graph(zone()),
         schedule(zone()),
         info(static_cast<HydrogenCodeStub*>(NULL), main_isolate()),
-        linkage(&info),
+        linkage(zone(), &info),
         common(zone()),
-        machine(zone(), kMachineWord32),
         code(NULL) {}
 
   ~InstructionTester() { delete code; }
@@ -51,27 +51,30 @@ class InstructionTester : public HandleAndZoneScope {
   void allocCode() {
     if (schedule.rpo_order()->size() == 0) {
       // Compute the RPO order.
-      Scheduler::ComputeSpecialRPO(&schedule);
+      ZonePool zone_pool(isolate);
+      Scheduler::ComputeSpecialRPO(&zone_pool, &schedule);
       DCHECK(schedule.rpo_order()->size() > 0);
     }
-    code = new TestInstrSeq(&linkage, &graph, &schedule);
+    InstructionBlocks* instruction_blocks =
+        TestInstrSeq::InstructionBlocksFor(main_zone(), &schedule);
+    code = new TestInstrSeq(main_zone(), instruction_blocks);
   }
 
   Node* Int32Constant(int32_t val) {
     Node* node = graph.NewNode(common.Int32Constant(val));
-    schedule.AddNode(schedule.entry(), node);
+    schedule.AddNode(schedule.start(), node);
     return node;
   }
 
   Node* Float64Constant(double val) {
     Node* node = graph.NewNode(common.Float64Constant(val));
-    schedule.AddNode(schedule.entry(), node);
+    schedule.AddNode(schedule.start(), node);
     return node;
   }
 
   Node* Parameter(int32_t which) {
     Node* node = graph.NewNode(common.Parameter(which));
-    schedule.AddNode(schedule.entry(), node);
+    schedule.AddNode(schedule.start(), node);
     return node;
   }
 
@@ -81,10 +84,10 @@ class InstructionTester : public HandleAndZoneScope {
     return node;
   }
 
-  int NewInstr(BasicBlock* block) {
+  int NewInstr() {
     InstructionCode opcode = static_cast<InstructionCode>(110);
     TestInstr* instr = TestInstr::New(zone(), opcode);
-    return code->AddInstruction(instr, block);
+    return code->AddInstruction(instr);
   }
 
   UnallocatedOperand* NewUnallocated(int vreg) {
@@ -92,6 +95,21 @@ class InstructionTester : public HandleAndZoneScope {
         new (zone()) UnallocatedOperand(UnallocatedOperand::ANY);
     unallocated->set_virtual_register(vreg);
     return unallocated;
+  }
+
+  InstructionBlock* BlockAt(BasicBlock* block) {
+    return code->InstructionBlockAt(block->GetRpoNumber());
+  }
+  BasicBlock* GetBasicBlock(int instruction_index) {
+    const InstructionBlock* block =
+        code->GetInstructionBlock(instruction_index);
+    return schedule.rpo_order()->at(block->rpo_number().ToSize());
+  }
+  int first_instruction_index(BasicBlock* block) {
+    return BlockAt(block)->first_instruction_index();
+  }
+  int last_instruction_index(BasicBlock* block) {
+    return BlockAt(block)->last_instruction_index();
   }
 };
 
@@ -103,7 +121,7 @@ TEST(InstructionBasic) {
     R.Int32Constant(i);  // Add some nodes to the graph.
   }
 
-  BasicBlock* last = R.schedule.entry();
+  BasicBlock* last = R.schedule.start();
   for (int i = 0; i < 5; i++) {
     BasicBlock* block = R.schedule.NewBasicBlock();
     R.schedule.AddGoto(last, block);
@@ -112,17 +130,16 @@ TEST(InstructionBasic) {
 
   R.allocCode();
 
-  CHECK_EQ(R.graph.NodeCount(), R.code->ValueCount());
-
   BasicBlockVector* blocks = R.schedule.rpo_order();
-  CHECK_EQ(static_cast<int>(blocks->size()), R.code->BasicBlockCount());
+  CHECK_EQ(static_cast<int>(blocks->size()), R.code->InstructionBlockCount());
 
   int index = 0;
   for (BasicBlockVectorIter i = blocks->begin(); i != blocks->end();
        i++, index++) {
     BasicBlock* block = *i;
-    CHECK_EQ(block, R.code->BlockAt(index));
-    CHECK_EQ(-1, R.code->GetLoopEnd(block));
+    CHECK_EQ(block->rpo_number(), R.BlockAt(block)->rpo_number().ToInt());
+    CHECK_EQ(block->id().ToInt(), R.BlockAt(block)->id().ToInt());
+    CHECK_EQ(NULL, block->loop_end());
   }
 }
 
@@ -130,10 +147,10 @@ TEST(InstructionBasic) {
 TEST(InstructionGetBasicBlock) {
   InstructionTester R;
 
-  BasicBlock* b0 = R.schedule.entry();
+  BasicBlock* b0 = R.schedule.start();
   BasicBlock* b1 = R.schedule.NewBasicBlock();
   BasicBlock* b2 = R.schedule.NewBasicBlock();
-  BasicBlock* b3 = R.schedule.exit();
+  BasicBlock* b3 = R.schedule.end();
 
   R.schedule.AddGoto(b0, b1);
   R.schedule.AddGoto(b1, b2);
@@ -141,63 +158,63 @@ TEST(InstructionGetBasicBlock) {
 
   R.allocCode();
 
-  R.code->StartBlock(b0);
-  int i0 = R.NewInstr(b0);
-  int i1 = R.NewInstr(b0);
-  R.code->EndBlock(b0);
-  R.code->StartBlock(b1);
-  int i2 = R.NewInstr(b1);
-  int i3 = R.NewInstr(b1);
-  int i4 = R.NewInstr(b1);
-  int i5 = R.NewInstr(b1);
-  R.code->EndBlock(b1);
-  R.code->StartBlock(b2);
-  int i6 = R.NewInstr(b2);
-  int i7 = R.NewInstr(b2);
-  int i8 = R.NewInstr(b2);
-  R.code->EndBlock(b2);
-  R.code->StartBlock(b3);
-  R.code->EndBlock(b3);
+  R.code->StartBlock(b0->GetRpoNumber());
+  int i0 = R.NewInstr();
+  int i1 = R.NewInstr();
+  R.code->EndBlock(b0->GetRpoNumber());
+  R.code->StartBlock(b1->GetRpoNumber());
+  int i2 = R.NewInstr();
+  int i3 = R.NewInstr();
+  int i4 = R.NewInstr();
+  int i5 = R.NewInstr();
+  R.code->EndBlock(b1->GetRpoNumber());
+  R.code->StartBlock(b2->GetRpoNumber());
+  int i6 = R.NewInstr();
+  int i7 = R.NewInstr();
+  int i8 = R.NewInstr();
+  R.code->EndBlock(b2->GetRpoNumber());
+  R.code->StartBlock(b3->GetRpoNumber());
+  R.code->EndBlock(b3->GetRpoNumber());
 
-  CHECK_EQ(b0, R.code->GetBasicBlock(i0));
-  CHECK_EQ(b0, R.code->GetBasicBlock(i1));
+  CHECK_EQ(b0, R.GetBasicBlock(i0));
+  CHECK_EQ(b0, R.GetBasicBlock(i1));
 
-  CHECK_EQ(b1, R.code->GetBasicBlock(i2));
-  CHECK_EQ(b1, R.code->GetBasicBlock(i3));
-  CHECK_EQ(b1, R.code->GetBasicBlock(i4));
-  CHECK_EQ(b1, R.code->GetBasicBlock(i5));
+  CHECK_EQ(b1, R.GetBasicBlock(i2));
+  CHECK_EQ(b1, R.GetBasicBlock(i3));
+  CHECK_EQ(b1, R.GetBasicBlock(i4));
+  CHECK_EQ(b1, R.GetBasicBlock(i5));
 
-  CHECK_EQ(b2, R.code->GetBasicBlock(i6));
-  CHECK_EQ(b2, R.code->GetBasicBlock(i7));
-  CHECK_EQ(b2, R.code->GetBasicBlock(i8));
+  CHECK_EQ(b2, R.GetBasicBlock(i6));
+  CHECK_EQ(b2, R.GetBasicBlock(i7));
+  CHECK_EQ(b2, R.GetBasicBlock(i8));
 
-  CHECK_EQ(b0, R.code->GetBasicBlock(b0->first_instruction_index()));
-  CHECK_EQ(b0, R.code->GetBasicBlock(b0->last_instruction_index()));
+  CHECK_EQ(b0, R.GetBasicBlock(R.first_instruction_index(b0)));
+  CHECK_EQ(b0, R.GetBasicBlock(R.last_instruction_index(b0)));
 
-  CHECK_EQ(b1, R.code->GetBasicBlock(b1->first_instruction_index()));
-  CHECK_EQ(b1, R.code->GetBasicBlock(b1->last_instruction_index()));
+  CHECK_EQ(b1, R.GetBasicBlock(R.first_instruction_index(b1)));
+  CHECK_EQ(b1, R.GetBasicBlock(R.last_instruction_index(b1)));
 
-  CHECK_EQ(b2, R.code->GetBasicBlock(b2->first_instruction_index()));
-  CHECK_EQ(b2, R.code->GetBasicBlock(b2->last_instruction_index()));
+  CHECK_EQ(b2, R.GetBasicBlock(R.first_instruction_index(b2)));
+  CHECK_EQ(b2, R.GetBasicBlock(R.last_instruction_index(b2)));
 
-  CHECK_EQ(b3, R.code->GetBasicBlock(b3->first_instruction_index()));
-  CHECK_EQ(b3, R.code->GetBasicBlock(b3->last_instruction_index()));
+  CHECK_EQ(b3, R.GetBasicBlock(R.first_instruction_index(b3)));
+  CHECK_EQ(b3, R.GetBasicBlock(R.last_instruction_index(b3)));
 }
 
 
 TEST(InstructionIsGapAt) {
   InstructionTester R;
 
-  BasicBlock* b0 = R.schedule.entry();
+  BasicBlock* b0 = R.schedule.start();
   R.schedule.AddReturn(b0, R.Int32Constant(1));
 
   R.allocCode();
   TestInstr* i0 = TestInstr::New(R.zone(), 100);
   TestInstr* g = TestInstr::New(R.zone(), 103)->MarkAsControl();
-  R.code->StartBlock(b0);
-  R.code->AddInstruction(i0, b0);
-  R.code->AddInstruction(g, b0);
-  R.code->EndBlock(b0);
+  R.code->StartBlock(b0->GetRpoNumber());
+  R.code->AddInstruction(i0);
+  R.code->AddInstruction(g);
+  R.code->EndBlock(b0->GetRpoNumber());
 
   CHECK_EQ(true, R.code->InstructionAt(0)->IsBlockStart());
 
@@ -213,25 +230,25 @@ TEST(InstructionIsGapAt) {
 TEST(InstructionIsGapAt2) {
   InstructionTester R;
 
-  BasicBlock* b0 = R.schedule.entry();
-  BasicBlock* b1 = R.schedule.exit();
+  BasicBlock* b0 = R.schedule.start();
+  BasicBlock* b1 = R.schedule.end();
   R.schedule.AddGoto(b0, b1);
   R.schedule.AddReturn(b1, R.Int32Constant(1));
 
   R.allocCode();
   TestInstr* i0 = TestInstr::New(R.zone(), 100);
   TestInstr* g = TestInstr::New(R.zone(), 103)->MarkAsControl();
-  R.code->StartBlock(b0);
-  R.code->AddInstruction(i0, b0);
-  R.code->AddInstruction(g, b0);
-  R.code->EndBlock(b0);
+  R.code->StartBlock(b0->GetRpoNumber());
+  R.code->AddInstruction(i0);
+  R.code->AddInstruction(g);
+  R.code->EndBlock(b0->GetRpoNumber());
 
   TestInstr* i1 = TestInstr::New(R.zone(), 102);
   TestInstr* g1 = TestInstr::New(R.zone(), 104)->MarkAsControl();
-  R.code->StartBlock(b1);
-  R.code->AddInstruction(i1, b1);
-  R.code->AddInstruction(g1, b1);
-  R.code->EndBlock(b1);
+  R.code->StartBlock(b1->GetRpoNumber());
+  R.code->AddInstruction(i1);
+  R.code->AddInstruction(g1);
+  R.code->EndBlock(b1->GetRpoNumber());
 
   CHECK_EQ(true, R.code->InstructionAt(0)->IsBlockStart());
 
@@ -256,16 +273,16 @@ TEST(InstructionIsGapAt2) {
 TEST(InstructionAddGapMove) {
   InstructionTester R;
 
-  BasicBlock* b0 = R.schedule.entry();
+  BasicBlock* b0 = R.schedule.start();
   R.schedule.AddReturn(b0, R.Int32Constant(1));
 
   R.allocCode();
   TestInstr* i0 = TestInstr::New(R.zone(), 100);
   TestInstr* g = TestInstr::New(R.zone(), 103)->MarkAsControl();
-  R.code->StartBlock(b0);
-  R.code->AddInstruction(i0, b0);
-  R.code->AddInstruction(g, b0);
-  R.code->EndBlock(b0);
+  R.code->StartBlock(b0->GetRpoNumber());
+  R.code->AddInstruction(i0);
+  R.code->AddInstruction(g);
+  R.code->EndBlock(b0->GetRpoNumber());
 
   CHECK_EQ(true, R.code->InstructionAt(0)->IsBlockStart());
 
@@ -324,9 +341,9 @@ TEST(InstructionOperands) {
       new (&zone) UnallocatedOperand(UnallocatedOperand::MUST_HAVE_REGISTER),
       new (&zone) UnallocatedOperand(UnallocatedOperand::MUST_HAVE_REGISTER)};
 
-  for (size_t i = 0; i < ARRAY_SIZE(outputs); i++) {
-    for (size_t j = 0; j < ARRAY_SIZE(inputs); j++) {
-      for (size_t k = 0; k < ARRAY_SIZE(temps); k++) {
+  for (size_t i = 0; i < arraysize(outputs); i++) {
+    for (size_t j = 0; j < arraysize(inputs); j++) {
+      for (size_t k = 0; k < arraysize(temps); k++) {
         TestInstr* m =
             TestInstr::New(&zone, 101, i, outputs, j, inputs, k, temps);
         CHECK(i == m->OutputCount());

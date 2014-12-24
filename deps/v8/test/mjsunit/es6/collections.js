@@ -25,7 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --expose-gc --allow-natives-syntax
+// Flags: --expose-gc --allow-natives-syntax --harmony-tostring
 
 
 function assertSize(expected, collection) {
@@ -117,7 +117,8 @@ function TestMapBehavior2(m) {
     TestMapping(m, i / 10, new Object);
     TestMapping(m, 'key-' + i, new Object);
   }
-  var keys = [ +0, -0, +Infinity, -Infinity, true, false, null, undefined ];
+  // -0 is handled in TestMinusZeroMap
+  var keys = [ 0, +Infinity, -Infinity, true, false, null, undefined ];
   for (var i = 0; i < keys.length; i++) {
     TestMapping(m, keys[i], new Object);
   }
@@ -299,7 +300,7 @@ assertEquals("WeakSet", WeakSet.name);
 function TestPrototype(C) {
   assertTrue(C.prototype instanceof Object);
   assertEquals({
-    value: {},
+    value: C.prototype,
     writable: false,
     enumerable: false,
     configurable: false
@@ -495,24 +496,26 @@ for (var i = 9; i >= 0; i--) {
 
 
 (function TestMinusZeroSet() {
-  var m = new Set();
-  m.add(0);
-  m.add(-0);
-  assertEquals(1, m.size);
-  assertTrue(m.has(0));
-  assertTrue(m.has(-0));
+  var s = new Set();
+  s.add(-0);
+  assertSame(0, s.values().next().value);
+  s.add(0);
+  assertEquals(1, s.size);
+  assertTrue(s.has(0));
+  assertTrue(s.has(-0));
 })();
 
 
 (function TestMinusZeroMap() {
   var m = new Map();
-  m.set(0, 'plus');
   m.set(-0, 'minus');
+  assertSame(0, m.keys().next().value);
+  m.set(0, 'plus');
   assertEquals(1, m.size);
   assertTrue(m.has(0));
   assertTrue(m.has(-0));
-  assertEquals('minus', m.get(0));
-  assertEquals('minus', m.get(-0));
+  assertEquals('plus', m.get(0));
+  assertEquals('plus', m.get(-0));
 })();
 
 
@@ -687,6 +690,33 @@ for (var i = 9; i >= 0; i--) {
   });
   assertEquals(4950, accumulated);
 })();
+
+
+(function TestSetForEachReceiverAsObject() {
+  var set = new Set(["1", "2"]);
+
+  // Create a new object in each function call when receiver is a
+  // primitive value. See ECMA-262, Annex C.
+  var a = [];
+  set.forEach(function() { a.push(this) }, "");
+  assertTrue(a[0] !== a[1]);
+
+  // Do not create a new object otherwise.
+  a = [];
+  set.forEach(function() { a.push(this); }, {});
+  assertEquals(a[0], a[1]);
+})();
+
+
+(function TestSetForEachReceiverAsObjectInStrictMode() {
+  var set = new Set(["1", "2"]);
+
+  // In strict mode primitive values should not be coerced to an object.
+  var a = [];
+  set.forEach(function() { 'use strict'; a.push(this); }, "");
+  assertTrue(a[0] === "" && a[0] === a[1]);
+})();
+
 
 (function TestMapForEachInvalidTypes() {
   assertThrows(function() {
@@ -995,6 +1025,36 @@ for (var i = 9; i >= 0; i--) {
 })();
 
 
+(function TestMapForEachReceiverAsObject() {
+  var map = new Map();
+  map.set("key1", "value1");
+  map.set("key2", "value2");
+
+  // Create a new object in each function call when receiver is a
+  // primitive value. See ECMA-262, Annex C.
+  var a = [];
+  map.forEach(function() { a.push(this) }, "");
+  assertTrue(a[0] !== a[1]);
+
+  // Do not create a new object otherwise.
+  a = [];
+  map.forEach(function() { a.push(this); }, {});
+  assertEquals(a[0], a[1]);
+})();
+
+
+(function TestMapForEachReceiverAsObjectInStrictMode() {
+  var map = new Map();
+  map.set("key1", "value1");
+  map.set("key2", "value2");
+
+  // In strict mode primitive values should not be coerced to an object.
+  var a = [];
+  map.forEach(function() { 'use strict'; a.push(this); }, "");
+  assertTrue(a[0] === "" && a[0] === a[1]);
+})();
+
+
 // Allows testing iterator-based constructors easily.
 var oneAndTwo = new Map();
 var k0 = {key: 0};
@@ -1014,6 +1074,9 @@ function TestSetConstructor(ctor) {
   // No @@iterator
   assertThrows(function() {
     new ctor({});
+  }, TypeError);
+  assertThrows(function() {
+    new ctor(true);
   }, TypeError);
 
   // @@iterator not callable
@@ -1141,6 +1204,46 @@ TestSetConstructorNextNotAnObject(Set);
 TestSetConstructorNextNotAnObject(WeakSet);
 
 
+(function TestWeakSetConstructorNonObjectKeys() {
+  assertThrows(function() {
+    new WeakSet([1]);
+  }, TypeError);
+})();
+
+
+function TestSetConstructorIterableValue(ctor) {
+  'use strict';
+  // Strict mode is required to prevent implicit wrapping in the getter.
+  Object.defineProperty(Number.prototype, Symbol.iterator, {
+    get: function() {
+      assertEquals('object', typeof this);
+      return function() {
+        return oneAndTwo.keys();
+      };
+    },
+    configurable: true
+  });
+
+  var set = new ctor(42);
+  assertSize(2, set);
+  assertTrue(set.has(k1));
+  assertTrue(set.has(k2));
+
+  delete Number.prototype[Symbol.iterator];
+}
+TestSetConstructorIterableValue(Set);
+TestSetConstructorIterableValue(WeakSet);
+
+
+(function TestSetConstructorStringValue() {
+  var s = new Set('abc');
+  assertSize(3, s);
+  assertTrue(s.has('a'));
+  assertTrue(s.has('b'));
+  assertTrue(s.has('c'));
+})();
+
+
 function TestMapConstructor(ctor) {
   var m = new ctor(null);
   assertSize(0, m);
@@ -1151,6 +1254,9 @@ function TestMapConstructor(ctor) {
   // No @@iterator
   assertThrows(function() {
     new ctor({});
+  }, TypeError);
+  assertThrows(function() {
+    new ctor(true);
   }, TypeError);
 
   // @@iterator not callable
@@ -1286,3 +1392,43 @@ function TestMapConstructorIteratorNotObjectValues(ctor) {
 }
 TestMapConstructorIteratorNotObjectValues(Map);
 TestMapConstructorIteratorNotObjectValues(WeakMap);
+
+
+(function TestWeakMapConstructorNonObjectKeys() {
+  assertThrows(function() {
+    new WeakMap([[1, 2]])
+  }, TypeError);
+})();
+
+
+function TestMapConstructorIterableValue(ctor) {
+  'use strict';
+  // Strict mode is required to prevent implicit wrapping in the getter.
+  Object.defineProperty(Number.prototype, Symbol.iterator, {
+    get: function() {
+      assertEquals('object', typeof this);
+      return function() {
+        return oneAndTwo.entries();
+      };
+    },
+    configurable: true
+  });
+
+  var map = new ctor(42);
+  assertSize(2, map);
+  assertEquals(1, map.get(k1));
+  assertEquals(2, map.get(k2));
+
+  delete Number.prototype[Symbol.iterator];
+}
+TestMapConstructorIterableValue(Map);
+TestMapConstructorIterableValue(WeakMap);
+
+function TestCollectionToString(C) {
+  assertEquals("[object " + C.name + "]",
+      Object.prototype.toString.call(new C()));
+}
+TestCollectionToString(Map);
+TestCollectionToString(Set);
+TestCollectionToString(WeakMap);
+TestCollectionToString(WeakSet);

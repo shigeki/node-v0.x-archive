@@ -6,43 +6,35 @@
 #define V8_COMPILER_INSTRUCTION_H_
 
 #include <deque>
+#include <iosfwd>
 #include <map>
 #include <set>
 
-// TODO(titzer): don't include the assembler?
-#include "src/assembler.h"
 #include "src/compiler/common-operator.h"
 #include "src/compiler/frame.h"
-#include "src/compiler/graph.h"
 #include "src/compiler/instruction-codes.h"
 #include "src/compiler/opcodes.h"
+#include "src/compiler/register-configuration.h"
 #include "src/compiler/schedule.h"
+#include "src/compiler/source-position.h"
 #include "src/zone-allocator.h"
 
 namespace v8 {
 namespace internal {
-
-// Forward declarations.
-class OStream;
-
 namespace compiler {
-
-// Forward declarations.
-class Linkage;
 
 // A couple of reserved opcodes are used for internal use.
 const InstructionCode kGapInstruction = -1;
 const InstructionCode kBlockStartInstruction = -2;
 const InstructionCode kSourcePositionInstruction = -3;
 
-
-#define INSTRUCTION_OPERAND_LIST(V)              \
-  V(Constant, CONSTANT, 128)                     \
-  V(Immediate, IMMEDIATE, 128)                   \
-  V(StackSlot, STACK_SLOT, 128)                  \
-  V(DoubleStackSlot, DOUBLE_STACK_SLOT, 128)     \
-  V(Register, REGISTER, Register::kNumRegisters) \
-  V(DoubleRegister, DOUBLE_REGISTER, DoubleRegister::kMaxNumRegisters)
+#define INSTRUCTION_OPERAND_LIST(V)                                  \
+  V(Constant, CONSTANT, 0)                                           \
+  V(Immediate, IMMEDIATE, 0)                                         \
+  V(StackSlot, STACK_SLOT, 128)                                      \
+  V(DoubleStackSlot, DOUBLE_STACK_SLOT, 128)                         \
+  V(Register, REGISTER, RegisterConfiguration::kMaxGeneralRegisters) \
+  V(DoubleRegister, DOUBLE_REGISTER, RegisterConfiguration::kMaxDoubleRegisters)
 
 class InstructionOperand : public ZoneObject {
  public:
@@ -89,7 +81,15 @@ class InstructionOperand : public ZoneObject {
   unsigned value_;
 };
 
-OStream& operator<<(OStream& os, const InstructionOperand& op);
+typedef ZoneVector<InstructionOperand*> InstructionOperandVector;
+
+struct PrintableInstructionOperand {
+  const RegisterConfiguration* register_configuration_;
+  const InstructionOperand* op_;
+};
+
+std::ostream& operator<<(std::ostream& os,
+                         const PrintableInstructionOperand& op);
 
 class UnallocatedOperand : public InstructionOperand {
  public:
@@ -258,14 +258,14 @@ class UnallocatedOperand : public InstructionOperand {
   }
 
   // [lifetime]: Only for non-FIXED_SLOT.
-  bool IsUsedAtStart() {
+  bool IsUsedAtStart() const {
     DCHECK(basic_policy() == EXTENDED_POLICY);
     return LifetimeField::decode(value_) == USED_AT_START;
   }
 };
 
 
-class MoveOperands V8_FINAL {
+class MoveOperands FINAL {
  public:
   MoveOperands(InstructionOperand* source, InstructionOperand* destination)
       : source_(source), destination_(destination) {}
@@ -308,10 +308,18 @@ class MoveOperands V8_FINAL {
   InstructionOperand* destination_;
 };
 
-OStream& operator<<(OStream& os, const MoveOperands& mo);
+
+struct PrintableMoveOperands {
+  const RegisterConfiguration* register_configuration_;
+  const MoveOperands* move_operands_;
+};
+
+
+std::ostream& operator<<(std::ostream& os, const PrintableMoveOperands& mo);
+
 
 template <InstructionOperand::Kind kOperandKind, int kNumCachedOperands>
-class SubKindOperand V8_FINAL : public InstructionOperand {
+class SubKindOperand FINAL : public InstructionOperand {
  public:
   static SubKindOperand* Create(int index, Zone* zone) {
     DCHECK(index >= 0);
@@ -342,7 +350,7 @@ INSTRUCTION_OPERAND_LIST(INSTRUCTION_TYPEDEF_SUBKIND_OPERAND_CLASS)
 #undef INSTRUCTION_TYPEDEF_SUBKIND_OPERAND_CLASS
 
 
-class ParallelMove V8_FINAL : public ZoneObject {
+class ParallelMove FINAL : public ZoneObject {
  public:
   explicit ParallelMove(Zone* zone) : move_operands_(4, zone) {}
 
@@ -361,9 +369,17 @@ class ParallelMove V8_FINAL : public ZoneObject {
   ZoneList<MoveOperands> move_operands_;
 };
 
-OStream& operator<<(OStream& os, const ParallelMove& pm);
 
-class PointerMap V8_FINAL : public ZoneObject {
+struct PrintableParallelMove {
+  const RegisterConfiguration* register_configuration_;
+  const ParallelMove* parallel_move_;
+};
+
+
+std::ostream& operator<<(std::ostream& os, const PrintableParallelMove& pm);
+
+
+class PointerMap FINAL : public ZoneObject {
  public:
   explicit PointerMap(Zone* zone)
       : pointer_operands_(8, zone),
@@ -389,24 +405,26 @@ class PointerMap V8_FINAL : public ZoneObject {
   void RecordUntagged(InstructionOperand* op, Zone* zone);
 
  private:
-  friend OStream& operator<<(OStream& os, const PointerMap& pm);
+  friend std::ostream& operator<<(std::ostream& os, const PointerMap& pm);
 
   ZoneList<InstructionOperand*> pointer_operands_;
   ZoneList<InstructionOperand*> untagged_operands_;
   int instruction_position_;
 };
 
-OStream& operator<<(OStream& os, const PointerMap& pm);
+std::ostream& operator<<(std::ostream& os, const PointerMap& pm);
 
 // TODO(titzer): s/PointerMap/ReferenceMap/
 class Instruction : public ZoneObject {
  public:
   size_t OutputCount() const { return OutputCountField::decode(bit_field_); }
-  InstructionOperand* Output() const { return OutputAt(0); }
   InstructionOperand* OutputAt(size_t i) const {
     DCHECK(i < OutputCount());
     return operands_[i];
   }
+
+  bool HasOutput() const { return OutputCount() == 1; }
+  InstructionOperand* Output() const { return OutputAt(0); }
 
   size_t InputCount() const { return InputCountField::decode(bit_field_); }
   InstructionOperand* InputAt(size_t i) const {
@@ -534,7 +552,13 @@ class Instruction : public ZoneObject {
   InstructionOperand* operands_[1];
 };
 
-OStream& operator<<(OStream& os, const Instruction& instr);
+
+struct PrintableInstruction {
+  const RegisterConfiguration* register_configuration_;
+  const Instruction* instr_;
+};
+std::ostream& operator<<(std::ostream& os, const PrintableInstruction& instr);
+
 
 // Represents moves inserted before an instruction due to register allocation.
 // TODO(titzer): squash GapInstruction back into Instruction, since essentially
@@ -585,22 +609,19 @@ class GapInstruction : public Instruction {
   }
 
  private:
-  friend OStream& operator<<(OStream& os, const Instruction& instr);
+  friend std::ostream& operator<<(std::ostream& os,
+                                  const PrintableInstruction& instr);
   ParallelMove* parallel_moves_[LAST_INNER_POSITION + 1];
 };
 
 
 // This special kind of gap move instruction represents the beginning of a
 // block of code.
-// TODO(titzer): move code_start and code_end from BasicBlock to here.
-class BlockStartInstruction V8_FINAL : public GapInstruction {
+class BlockStartInstruction FINAL : public GapInstruction {
  public:
-  BasicBlock* block() const { return block_; }
-  Label* label() { return &label_; }
-
-  static BlockStartInstruction* New(Zone* zone, BasicBlock* block) {
+  static BlockStartInstruction* New(Zone* zone) {
     void* buffer = zone->New(sizeof(BlockStartInstruction));
-    return new (buffer) BlockStartInstruction(block);
+    return new (buffer) BlockStartInstruction();
   }
 
   static BlockStartInstruction* cast(Instruction* instr) {
@@ -609,15 +630,11 @@ class BlockStartInstruction V8_FINAL : public GapInstruction {
   }
 
  private:
-  explicit BlockStartInstruction(BasicBlock* block)
-      : GapInstruction(kBlockStartInstruction), block_(block) {}
-
-  BasicBlock* block_;
-  Label label_;
+  BlockStartInstruction() : GapInstruction(kBlockStartInstruction) {}
 };
 
 
-class SourcePositionInstruction V8_FINAL : public Instruction {
+class SourcePositionInstruction FINAL : public Instruction {
  public:
   static SourcePositionInstruction* New(Zone* zone, SourcePosition position) {
     void* buffer = zone->New(sizeof(SourcePositionInstruction));
@@ -648,23 +665,33 @@ class SourcePositionInstruction V8_FINAL : public Instruction {
 };
 
 
-class Constant V8_FINAL {
+class Constant FINAL {
  public:
-  enum Type { kInt32, kInt64, kFloat64, kExternalReference, kHeapObject };
+  enum Type {
+    kInt32,
+    kInt64,
+    kFloat32,
+    kFloat64,
+    kExternalReference,
+    kHeapObject
+  };
 
   explicit Constant(int32_t v) : type_(kInt32), value_(v) {}
   explicit Constant(int64_t v) : type_(kInt64), value_(v) {}
-  explicit Constant(double v) : type_(kFloat64), value_(BitCast<int64_t>(v)) {}
+  explicit Constant(float v) : type_(kFloat32), value_(bit_cast<int32_t>(v)) {}
+  explicit Constant(double v) : type_(kFloat64), value_(bit_cast<int64_t>(v)) {}
   explicit Constant(ExternalReference ref)
-      : type_(kExternalReference), value_(BitCast<intptr_t>(ref)) {}
+      : type_(kExternalReference), value_(bit_cast<intptr_t>(ref)) {}
   explicit Constant(Handle<HeapObject> obj)
-      : type_(kHeapObject), value_(BitCast<intptr_t>(obj)) {}
+      : type_(kHeapObject), value_(bit_cast<intptr_t>(obj)) {}
 
   Type type() const { return type_; }
 
   int32_t ToInt32() const {
-    DCHECK_EQ(kInt32, type());
-    return static_cast<int32_t>(value_);
+    DCHECK(type() == kInt32 || type() == kInt64);
+    const int32_t value = static_cast<int32_t>(value_);
+    DCHECK_EQ(value_, static_cast<int64_t>(value));
+    return value;
   }
 
   int64_t ToInt64() const {
@@ -673,20 +700,25 @@ class Constant V8_FINAL {
     return value_;
   }
 
+  float ToFloat32() const {
+    DCHECK_EQ(kFloat32, type());
+    return bit_cast<float>(static_cast<int32_t>(value_));
+  }
+
   double ToFloat64() const {
     if (type() == kInt32) return ToInt32();
     DCHECK_EQ(kFloat64, type());
-    return BitCast<double>(value_);
+    return bit_cast<double>(value_);
   }
 
   ExternalReference ToExternalReference() const {
     DCHECK_EQ(kExternalReference, type());
-    return BitCast<ExternalReference>(static_cast<intptr_t>(value_));
+    return bit_cast<ExternalReference>(static_cast<intptr_t>(value_));
   }
 
   Handle<HeapObject> ToHeapObject() const {
     DCHECK_EQ(kHeapObject, type());
-    return BitCast<Handle<HeapObject> >(static_cast<intptr_t>(value_));
+    return bit_cast<Handle<HeapObject> >(static_cast<intptr_t>(value_));
   }
 
  private:
@@ -697,84 +729,180 @@ class Constant V8_FINAL {
 
 class FrameStateDescriptor : public ZoneObject {
  public:
-  FrameStateDescriptor(BailoutId bailout_id, int parameters_count,
-                       int locals_count, int stack_count)
-      : bailout_id_(bailout_id),
-        parameters_count_(parameters_count),
-        locals_count_(locals_count),
-        stack_count_(stack_count) {}
+  FrameStateDescriptor(Zone* zone, const FrameStateCallInfo& state_info,
+                       size_t parameters_count, size_t locals_count,
+                       size_t stack_count,
+                       FrameStateDescriptor* outer_state = NULL);
 
+  FrameStateType type() const { return type_; }
   BailoutId bailout_id() const { return bailout_id_; }
-  int parameters_count() { return parameters_count_; }
-  int locals_count() { return locals_count_; }
-  int stack_count() { return stack_count_; }
+  OutputFrameStateCombine state_combine() const { return frame_state_combine_; }
+  size_t parameters_count() const { return parameters_count_; }
+  size_t locals_count() const { return locals_count_; }
+  size_t stack_count() const { return stack_count_; }
+  FrameStateDescriptor* outer_state() const { return outer_state_; }
+  MaybeHandle<JSFunction> jsfunction() const { return jsfunction_; }
+  bool HasContext() const { return type_ == JS_FRAME; }
 
-  int size() { return parameters_count_ + locals_count_ + stack_count_; }
+  size_t GetSize(OutputFrameStateCombine combine =
+                     OutputFrameStateCombine::Ignore()) const;
+  size_t GetTotalSize() const;
+  size_t GetFrameCount() const;
+  size_t GetJSFrameCount() const;
+
+  MachineType GetType(size_t index) const;
+  void SetType(size_t index, MachineType type);
 
  private:
+  FrameStateType type_;
   BailoutId bailout_id_;
-  int parameters_count_;
-  int locals_count_;
-  int stack_count_;
+  OutputFrameStateCombine frame_state_combine_;
+  size_t parameters_count_;
+  size_t locals_count_;
+  size_t stack_count_;
+  ZoneVector<MachineType> types_;
+  FrameStateDescriptor* outer_state_;
+  MaybeHandle<JSFunction> jsfunction_;
 };
 
-OStream& operator<<(OStream& os, const Constant& constant);
+std::ostream& operator<<(std::ostream& os, const Constant& constant);
 
-typedef std::deque<Constant, zone_allocator<Constant> > ConstantDeque;
+
+// TODO(dcarney): this is a temporary hack.  turn into an actual instruction.
+class PhiInstruction FINAL : public ZoneObject {
+ public:
+  PhiInstruction(Zone* zone, int virtual_register)
+      : virtual_register_(virtual_register), operands_(zone) {}
+
+  int virtual_register() const { return virtual_register_; }
+  const IntVector& operands() const { return operands_; }
+  IntVector& operands() { return operands_; }
+
+ private:
+  const int virtual_register_;
+  IntVector operands_;
+};
+
+
+// Analogue of BasicBlock for Instructions instead of Nodes.
+class InstructionBlock FINAL : public ZoneObject {
+ public:
+  InstructionBlock(Zone* zone, BasicBlock::Id id,
+                   BasicBlock::RpoNumber ao_number,
+                   BasicBlock::RpoNumber rpo_number,
+                   BasicBlock::RpoNumber loop_header,
+                   BasicBlock::RpoNumber loop_end, bool deferred);
+
+  // Instruction indexes (used by the register allocator).
+  int first_instruction_index() const {
+    DCHECK(code_start_ >= 0);
+    DCHECK(code_end_ > 0);
+    DCHECK(code_end_ >= code_start_);
+    return code_start_;
+  }
+  int last_instruction_index() const {
+    DCHECK(code_start_ >= 0);
+    DCHECK(code_end_ > 0);
+    DCHECK(code_end_ >= code_start_);
+    return code_end_ - 1;
+  }
+
+  int32_t code_start() const { return code_start_; }
+  void set_code_start(int32_t start) { code_start_ = start; }
+
+  int32_t code_end() const { return code_end_; }
+  void set_code_end(int32_t end) { code_end_ = end; }
+
+  bool IsDeferred() const { return deferred_; }
+
+  BasicBlock::Id id() const { return id_; }
+  BasicBlock::RpoNumber ao_number() const { return ao_number_; }
+  BasicBlock::RpoNumber rpo_number() const { return rpo_number_; }
+  BasicBlock::RpoNumber loop_header() const { return loop_header_; }
+  BasicBlock::RpoNumber loop_end() const {
+    DCHECK(IsLoopHeader());
+    return loop_end_;
+  }
+  inline bool IsLoopHeader() const { return loop_end_.IsValid(); }
+
+  typedef ZoneVector<BasicBlock::RpoNumber> Predecessors;
+  Predecessors& predecessors() { return predecessors_; }
+  const Predecessors& predecessors() const { return predecessors_; }
+  size_t PredecessorCount() const { return predecessors_.size(); }
+  size_t PredecessorIndexOf(BasicBlock::RpoNumber rpo_number) const;
+
+  typedef ZoneVector<BasicBlock::RpoNumber> Successors;
+  Successors& successors() { return successors_; }
+  const Successors& successors() const { return successors_; }
+  size_t SuccessorCount() const { return successors_.size(); }
+
+  typedef ZoneVector<PhiInstruction*> PhiInstructions;
+  const PhiInstructions& phis() const { return phis_; }
+  void AddPhi(PhiInstruction* phi) { phis_.push_back(phi); }
+
+ private:
+  Successors successors_;
+  Predecessors predecessors_;
+  PhiInstructions phis_;
+  const BasicBlock::Id id_;
+  const BasicBlock::RpoNumber ao_number_;  // Assembly order number.
+  // TODO(dcarney): probably dont't need this.
+  const BasicBlock::RpoNumber rpo_number_;
+  const BasicBlock::RpoNumber loop_header_;
+  const BasicBlock::RpoNumber loop_end_;
+  int32_t code_start_;   // start index of arch-specific code.
+  int32_t code_end_;     // end index of arch-specific code.
+  const bool deferred_;  // Block contains deferred code.
+};
+
+typedef ZoneDeque<Constant> ConstantDeque;
 typedef std::map<int, Constant, std::less<int>,
                  zone_allocator<std::pair<int, Constant> > > ConstantMap;
 
+typedef ZoneDeque<Instruction*> InstructionDeque;
+typedef ZoneDeque<PointerMap*> PointerMapDeque;
+typedef ZoneVector<FrameStateDescriptor*> DeoptimizationVector;
+typedef ZoneVector<InstructionBlock*> InstructionBlocks;
 
-typedef std::deque<Instruction*, zone_allocator<Instruction*> >
-    InstructionDeque;
-typedef std::deque<PointerMap*, zone_allocator<PointerMap*> > PointerMapDeque;
-typedef std::vector<FrameStateDescriptor*,
-                    zone_allocator<FrameStateDescriptor*> >
-    DeoptimizationVector;
+struct PrintableInstructionSequence;
 
 
 // Represents architecture-specific generated code before, during, and after
 // register allocation.
 // TODO(titzer): s/IsDouble/IsFloat64/
-class InstructionSequence V8_FINAL {
+class InstructionSequence FINAL {
  public:
-  InstructionSequence(Linkage* linkage, Graph* graph, Schedule* schedule)
-      : graph_(graph),
-        linkage_(linkage),
-        schedule_(schedule),
-        constants_(ConstantMap::key_compare(),
-                   ConstantMap::allocator_type(zone())),
-        immediates_(ConstantDeque::allocator_type(zone())),
-        instructions_(InstructionDeque::allocator_type(zone())),
-        next_virtual_register_(graph->NodeCount()),
-        pointer_maps_(PointerMapDeque::allocator_type(zone())),
-        doubles_(std::less<int>(), VirtualRegisterSet::allocator_type(zone())),
-        references_(std::less<int>(),
-                    VirtualRegisterSet::allocator_type(zone())),
-        deoptimization_entries_(DeoptimizationVector::allocator_type(zone())) {}
+  static InstructionBlocks* InstructionBlocksFor(Zone* zone,
+                                                 const Schedule* schedule);
+
+  InstructionSequence(Zone* zone, InstructionBlocks* instruction_blocks);
 
   int NextVirtualRegister() { return next_virtual_register_++; }
   int VirtualRegisterCount() const { return next_virtual_register_; }
 
-  int ValueCount() const { return graph_->NodeCount(); }
-
-  int BasicBlockCount() const {
-    return static_cast<int>(schedule_->rpo_order()->size());
+  const InstructionBlocks& instruction_blocks() const {
+    return *instruction_blocks_;
   }
 
-  BasicBlock* BlockAt(int rpo_number) const {
-    return (*schedule_->rpo_order())[rpo_number];
+  int InstructionBlockCount() const {
+    return static_cast<int>(instruction_blocks_->size());
   }
 
-  BasicBlock* GetContainingLoop(BasicBlock* block) {
-    return block->loop_header_;
+  InstructionBlock* InstructionBlockAt(BasicBlock::RpoNumber rpo_number) {
+    return instruction_blocks_->at(rpo_number.ToSize());
   }
 
-  int GetLoopEnd(BasicBlock* block) const { return block->loop_end_; }
+  int LastLoopInstructionIndex(const InstructionBlock* block) {
+    return instruction_blocks_->at(block->loop_end().ToSize() - 1)
+        ->last_instruction_index();
+  }
 
-  BasicBlock* GetBasicBlock(int instruction_index);
+  const InstructionBlock* InstructionBlockAt(
+      BasicBlock::RpoNumber rpo_number) const {
+    return instruction_blocks_->at(rpo_number.ToSize());
+  }
 
-  int GetVirtualRegister(Node* node) const { return node->id(); }
+  const InstructionBlock* GetInstructionBlock(int instruction_index) const;
 
   bool IsReference(int virtual_register) const;
   bool IsDouble(int virtual_register) const;
@@ -784,8 +912,7 @@ class InstructionSequence V8_FINAL {
 
   void AddGapMove(int index, InstructionOperand* from, InstructionOperand* to);
 
-  Label* GetLabel(BasicBlock* block);
-  BlockStartInstruction* GetBlockStart(BasicBlock* block);
+  BlockStartInstruction* GetBlockStart(BasicBlock::RpoNumber rpo);
 
   typedef InstructionDeque::const_iterator const_iterator;
   const_iterator begin() const { return instructions_.begin(); }
@@ -801,22 +928,20 @@ class InstructionSequence V8_FINAL {
     return instructions_[index];
   }
 
-  Frame* frame() { return &frame_; }
-  Graph* graph() const { return graph_; }
   Isolate* isolate() const { return zone()->isolate(); }
-  Linkage* linkage() const { return linkage_; }
-  Schedule* schedule() const { return schedule_; }
   const PointerMapDeque* pointer_maps() const { return &pointer_maps_; }
-  Zone* zone() const { return graph_->zone(); }
+  Zone* zone() const { return zone_; }
 
-  // Used by the code generator while adding instructions.
-  int AddInstruction(Instruction* instr, BasicBlock* block);
-  void StartBlock(BasicBlock* block);
-  void EndBlock(BasicBlock* block);
+  // Used by the instruction selector while adding instructions.
+  int AddInstruction(Instruction* instr);
+  void StartBlock(BasicBlock::RpoNumber rpo);
+  void EndBlock(BasicBlock::RpoNumber rpo);
 
-  void AddConstant(int virtual_register, Constant constant) {
+  int AddConstant(int virtual_register, Constant constant) {
+    DCHECK(virtual_register >= 0 && virtual_register < next_virtual_register_);
     DCHECK(constants_.find(virtual_register) == constants_.end());
     constants_.insert(std::make_pair(virtual_register, constant));
+    return virtual_register;
   }
   Constant GetConstant(int virtual_register) const {
     ConstantMap::const_iterator it = constants_.find(virtual_register);
@@ -839,18 +964,29 @@ class InstructionSequence V8_FINAL {
     return immediates_[index];
   }
 
-  int AddDeoptimizationEntry(FrameStateDescriptor* descriptor);
-  FrameStateDescriptor* GetDeoptimizationEntry(int deoptimization_id);
-  int GetDeoptimizationEntryCount();
+  class StateId {
+   public:
+    static StateId FromInt(int id) { return StateId(id); }
+    int ToInt() const { return id_; }
+
+   private:
+    explicit StateId(int id) : id_(id) {}
+    int id_;
+  };
+
+  StateId AddFrameStateDescriptor(FrameStateDescriptor* descriptor);
+  FrameStateDescriptor* GetFrameStateDescriptor(StateId deoptimization_id);
+  int GetFrameStateDescriptorCount();
 
  private:
-  friend OStream& operator<<(OStream& os, const InstructionSequence& code);
+  friend std::ostream& operator<<(std::ostream& os,
+                                  const PrintableInstructionSequence& code);
 
   typedef std::set<int, std::less<int>, ZoneIntAllocator> VirtualRegisterSet;
 
-  Graph* graph_;
-  Linkage* linkage_;
-  Schedule* schedule_;
+  Zone* const zone_;
+  InstructionBlocks* const instruction_blocks_;
+  IntVector block_starts_;
   ConstantMap constants_;
   ConstantDeque immediates_;
   InstructionDeque instructions_;
@@ -858,11 +994,18 @@ class InstructionSequence V8_FINAL {
   PointerMapDeque pointer_maps_;
   VirtualRegisterSet doubles_;
   VirtualRegisterSet references_;
-  Frame frame_;
   DeoptimizationVector deoptimization_entries_;
 };
 
-OStream& operator<<(OStream& os, const InstructionSequence& code);
+
+struct PrintableInstructionSequence {
+  const RegisterConfiguration* register_configuration_;
+  const InstructionSequence* sequence_;
+};
+
+
+std::ostream& operator<<(std::ostream& os,
+                         const PrintableInstructionSequence& code);
 
 }  // namespace compiler
 }  // namespace internal

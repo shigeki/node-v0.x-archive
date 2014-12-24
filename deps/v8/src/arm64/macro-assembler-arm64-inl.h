@@ -13,6 +13,7 @@
 #include "src/arm64/assembler-arm64.h"
 #include "src/arm64/instrument-arm64.h"
 #include "src/arm64/macro-assembler-arm64.h"
+#include "src/base/bits.h"
 
 
 namespace v8 {
@@ -824,6 +825,12 @@ void MacroAssembler::Frintn(const FPRegister& fd, const FPRegister& fn) {
 }
 
 
+void MacroAssembler::Frintp(const FPRegister& fd, const FPRegister& fn) {
+  DCHECK(allow_macro_instructions_);
+  frintp(fd, fn);
+}
+
+
 void MacroAssembler::Frintz(const FPRegister& fd, const FPRegister& fn) {
   DCHECK(allow_macro_instructions_);
   frintz(fd, fn);
@@ -1116,6 +1123,14 @@ void MacroAssembler::Smulh(const Register& rd,
   DCHECK(allow_macro_instructions_);
   DCHECK(!rd.IsZero());
   smulh(rd, rn, rm);
+}
+
+
+void MacroAssembler::Umull(const Register& rd, const Register& rn,
+                           const Register& rm) {
+  DCHECK(allow_macro_instructions_);
+  DCHECK(!rd.IsZero());
+  umaddl(rd, rn, rm, xzr);
 }
 
 
@@ -1520,7 +1535,7 @@ void MacroAssembler::Claim(uint64_t count, uint64_t unit_size) {
 
 void MacroAssembler::Claim(const Register& count, uint64_t unit_size) {
   if (unit_size == 0) return;
-  DCHECK(IsPowerOf2(unit_size));
+  DCHECK(base::bits::IsPowerOfTwo64(unit_size));
 
   const int shift = CountTrailingZeros(unit_size, kXRegSizeInBits);
   const Operand size(count, LSL, shift);
@@ -1538,7 +1553,7 @@ void MacroAssembler::Claim(const Register& count, uint64_t unit_size) {
 
 
 void MacroAssembler::ClaimBySMI(const Register& count_smi, uint64_t unit_size) {
-  DCHECK(unit_size == 0 || IsPowerOf2(unit_size));
+  DCHECK(unit_size == 0 || base::bits::IsPowerOfTwo64(unit_size));
   const int shift = CountTrailingZeros(unit_size, kXRegSizeInBits) - kSmiShift;
   const Operand size(count_smi,
                      (shift >= 0) ? (LSL) : (LSR),
@@ -1578,7 +1593,7 @@ void MacroAssembler::Drop(uint64_t count, uint64_t unit_size) {
 
 void MacroAssembler::Drop(const Register& count, uint64_t unit_size) {
   if (unit_size == 0) return;
-  DCHECK(IsPowerOf2(unit_size));
+  DCHECK(base::bits::IsPowerOfTwo64(unit_size));
 
   const int shift = CountTrailingZeros(unit_size, kXRegSizeInBits);
   const Operand size(count, LSL, shift);
@@ -1599,7 +1614,7 @@ void MacroAssembler::Drop(const Register& count, uint64_t unit_size) {
 
 
 void MacroAssembler::DropBySMI(const Register& count_smi, uint64_t unit_size) {
-  DCHECK(unit_size == 0 || IsPowerOf2(unit_size));
+  DCHECK(unit_size == 0 || base::bits::IsPowerOfTwo64(unit_size));
   const int shift = CountTrailingZeros(unit_size, kXRegSizeInBits) - kSmiShift;
   const Operand size(count_smi,
                      (shift >= 0) ? (LSL) : (LSR),

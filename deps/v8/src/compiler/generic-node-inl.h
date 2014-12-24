@@ -16,14 +16,18 @@ namespace internal {
 namespace compiler {
 
 template <class B, class S>
-GenericNode<B, S>::GenericNode(GenericGraphBase* graph, int input_count)
+GenericNode<B, S>::GenericNode(GenericGraphBase* graph, int input_count,
+                               int reserve_input_count)
     : BaseClass(graph->zone()),
       input_count_(input_count),
+      reserve_input_count_(reserve_input_count),
       has_appendable_inputs_(false),
       use_count_(0),
       first_use_(NULL),
       last_use_(NULL) {
-  inputs_.static_ = reinterpret_cast<Input*>(this + 1), AssignUniqueID(graph);
+  DCHECK(reserve_input_count <= kMaxReservedInputs);
+  inputs_.static_ = reinterpret_cast<Input*>(this + 1);
+  AssignUniqueID(graph);
 }
 
 template <class B, class S>
@@ -64,12 +68,13 @@ void GenericNode<B, S>::ReplaceUses(GenericNode* replace_to) {
   if (replace_to->last_use_ == NULL) {
     DCHECK_EQ(NULL, replace_to->first_use_);
     replace_to->first_use_ = first_use_;
-  } else {
+    replace_to->last_use_ = last_use_;
+  } else if (first_use_ != NULL) {
     DCHECK_NE(NULL, replace_to->first_use_);
     replace_to->last_use_->next = first_use_;
     first_use_->prev = replace_to->last_use_;
+    replace_to->last_use_ = last_use_;
   }
-  replace_to->last_use_ = last_use_;
   replace_to->use_count_ += use_count_;
   use_count_ = 0;
   first_use_ = NULL;
@@ -141,7 +146,7 @@ template <class B, class S>
 void GenericNode<B, S>::EnsureAppendableInputs(Zone* zone) {
   if (!has_appendable_inputs_) {
     void* deque_buffer = zone->New(sizeof(InputDeque));
-    InputDeque* deque = new (deque_buffer) InputDeque(ZoneInputAllocator(zone));
+    InputDeque* deque = new (deque_buffer) InputDeque(zone);
     for (int i = 0; i < input_count_; ++i) {
       deque->push_back(inputs_.static_[i]);
     }
@@ -152,12 +157,18 @@ void GenericNode<B, S>::EnsureAppendableInputs(Zone* zone) {
 
 template <class B, class S>
 void GenericNode<B, S>::AppendInput(Zone* zone, GenericNode<B, S>* to_append) {
-  EnsureAppendableInputs(zone);
   Use* new_use = new (zone) Use;
   Input new_input;
   new_input.to = to_append;
   new_input.use = new_use;
-  inputs_.appendable_->push_back(new_input);
+  if (reserve_input_count_ > 0) {
+    DCHECK(!has_appendable_inputs_);
+    reserve_input_count_--;
+    inputs_.static_[input_count_] = new_input;
+  } else {
+    EnsureAppendableInputs(zone);
+    inputs_.appendable_->push_back(new_input);
+  }
   new_use->input_index = input_count_;
   new_use->from = this;
   to_append->AppendUse(new_use);
@@ -174,6 +185,16 @@ void GenericNode<B, S>::InsertInput(Zone* zone, int index,
     ReplaceInput(i, InputAt(i - 1));
   }
   ReplaceInput(index, to_insert);
+}
+
+template <class B, class S>
+void GenericNode<B, S>::RemoveInput(int index) {
+  DCHECK(index >= 0 && index < InputCount());
+  // TODO(turbofan): Optimize this implementation!
+  for (; index < InputCount() - 1; ++index) {
+    ReplaceInput(index, InputAt(index + 1));
+  }
+  TrimInputCount(InputCount() - 1);
 }
 
 template <class B, class S>
@@ -212,15 +233,16 @@ inline bool GenericNode<B, S>::OwnedBy(GenericNode* owner) const {
 }
 
 template <class B, class S>
-S* GenericNode<B, S>::New(GenericGraphBase* graph, int input_count,
-                          S** inputs) {
+S* GenericNode<B, S>::New(GenericGraphBase* graph, int input_count, S** inputs,
+                          bool has_extensible_inputs) {
   size_t node_size = sizeof(GenericNode);
-  size_t inputs_size = input_count * sizeof(Input);
+  int reserve_input_count = has_extensible_inputs ? kDefaultReservedInputs : 0;
+  size_t inputs_size = (input_count + reserve_input_count) * sizeof(Input);
   size_t uses_size = input_count * sizeof(Use);
   int size = static_cast<int>(node_size + inputs_size + uses_size);
   Zone* zone = graph->zone();
   void* buffer = zone->New(size);
-  S* result = new (buffer) S(graph, input_count);
+  S* result = new (buffer) S(graph, input_count, reserve_input_count);
   Input* input =
       reinterpret_cast<Input*>(reinterpret_cast<char*>(buffer) + node_size);
   Use* use =

@@ -27,6 +27,7 @@
 
 #include <stdlib.h>
 
+#include "src/base/platform/platform.h"
 #include "src/snapshot.h"
 #include "src/v8.h"
 #include "test/cctest/cctest.h"
@@ -203,6 +204,38 @@ static void VerifyMemoryChunk(Isolate* isolate,
 }
 
 
+TEST(Regress3540) {
+  Isolate* isolate = CcTest::i_isolate();
+  Heap* heap = isolate->heap();
+  MemoryAllocator* memory_allocator = new MemoryAllocator(isolate);
+  CHECK(
+      memory_allocator->SetUp(heap->MaxReserved(), heap->MaxExecutableSize()));
+  TestMemoryAllocatorScope test_allocator_scope(isolate, memory_allocator);
+  CodeRange* code_range = new CodeRange(isolate);
+  const size_t code_range_size = 4 * MB;
+  if (!code_range->SetUp(
+          code_range_size +
+          RoundUp(v8::base::OS::CommitPageSize() * kReservedCodeRangePages,
+                  MemoryChunk::kAlignment))) {
+    return;
+  }
+  Address address;
+  size_t size;
+  address = code_range->AllocateRawMemory(code_range_size - MB,
+                                          code_range_size - MB, &size);
+  CHECK(address != NULL);
+  Address null_address;
+  size_t null_size;
+  null_address = code_range->AllocateRawMemory(
+      code_range_size - MB, code_range_size - MB, &null_size);
+  CHECK(null_address == NULL);
+  code_range->FreeRawMemory(address, size);
+  delete code_range;
+  memory_allocator->TearDown();
+  delete memory_allocator;
+}
+
+
 static unsigned int Pseudorandom() {
   static uint32_t lo = 2345;
   lo = 18273 * (lo & 0xFFFFF) + (lo >> 16);
@@ -212,9 +245,7 @@ static unsigned int Pseudorandom() {
 
 TEST(MemoryChunk) {
   Isolate* isolate = CcTest::i_isolate();
-  isolate->InitializeLoggingAndCounters();
   Heap* heap = isolate->heap();
-  CHECK(heap->ConfigureHeapDefault());
 
   size_t reserve_area_size = 1 * MB;
   size_t initial_commit_area_size, second_commit_area_size;
@@ -268,9 +299,7 @@ TEST(MemoryChunk) {
 
 TEST(MemoryAllocator) {
   Isolate* isolate = CcTest::i_isolate();
-  isolate->InitializeLoggingAndCounters();
   Heap* heap = isolate->heap();
-  CHECK(isolate->heap()->ConfigureHeapDefault());
 
   MemoryAllocator* memory_allocator = new MemoryAllocator(isolate);
   CHECK(memory_allocator->SetUp(heap->MaxReserved(),
@@ -317,9 +346,7 @@ TEST(MemoryAllocator) {
 
 TEST(NewSpace) {
   Isolate* isolate = CcTest::i_isolate();
-  isolate->InitializeLoggingAndCounters();
   Heap* heap = isolate->heap();
-  CHECK(heap->ConfigureHeapDefault());
   MemoryAllocator* memory_allocator = new MemoryAllocator(isolate);
   CHECK(memory_allocator->SetUp(heap->MaxReserved(),
                                 heap->MaxExecutableSize()));
@@ -345,9 +372,7 @@ TEST(NewSpace) {
 
 TEST(OldSpace) {
   Isolate* isolate = CcTest::i_isolate();
-  isolate->InitializeLoggingAndCounters();
   Heap* heap = isolate->heap();
-  CHECK(heap->ConfigureHeapDefault());
   MemoryAllocator* memory_allocator = new MemoryAllocator(isolate);
   CHECK(memory_allocator->SetUp(heap->MaxReserved(),
                                 heap->MaxExecutableSize()));
@@ -430,4 +455,56 @@ TEST(SizeOfFirstPageIsLargeEnough) {
 
   // No large objects required to perform the above steps.
   CHECK(isolate->heap()->lo_space()->IsEmpty());
+}
+
+
+static inline void FillCurrentPage(v8::internal::NewSpace* space) {
+  int new_linear_size = static_cast<int>(*space->allocation_limit_address() -
+                                         *space->allocation_top_address());
+  if (new_linear_size == 0) return;
+  v8::internal::AllocationResult allocation =
+      space->AllocateRaw(new_linear_size);
+  v8::internal::FreeListNode* node =
+      v8::internal::FreeListNode::cast(allocation.ToObjectChecked());
+  node->set_size(space->heap(), new_linear_size);
+}
+
+
+UNINITIALIZED_TEST(NewSpaceGrowsToTargetCapacity) {
+  FLAG_target_semi_space_size = 2;
+  if (FLAG_optimize_for_size) return;
+
+  v8::Isolate* isolate = v8::Isolate::New();
+  {
+    v8::Isolate::Scope isolate_scope(isolate);
+    v8::HandleScope handle_scope(isolate);
+    v8::Context::New(isolate)->Enter();
+
+    Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
+
+    NewSpace* new_space = i_isolate->heap()->new_space();
+
+    // This test doesn't work if we start with a non-default new space
+    // configuration.
+    if (new_space->InitialTotalCapacity() == Page::kPageSize) {
+      CHECK(new_space->CommittedMemory() == new_space->InitialTotalCapacity());
+
+      // Fill up the first (and only) page of the semi space.
+      FillCurrentPage(new_space);
+
+      // Try to allocate out of the new space. A new page should be added and
+      // the
+      // allocation should succeed.
+      v8::internal::AllocationResult allocation = new_space->AllocateRaw(80);
+      CHECK(!allocation.IsRetry());
+      CHECK(new_space->CommittedMemory() == 2 * Page::kPageSize);
+
+      // Turn the allocation into a proper object so isolate teardown won't
+      // crash.
+      v8::internal::FreeListNode* node =
+          v8::internal::FreeListNode::cast(allocation.ToObjectChecked());
+      node->set_size(new_space->heap(), 80);
+    }
+  }
+  isolate->Dispose();
 }

@@ -16,27 +16,26 @@
 using namespace v8::internal;
 using namespace v8::internal::compiler;
 
-static SimpleOperator dummy_operator(IrOpcode::kParameter, Operator::kNoWrite,
-                                     0, 0, "dummy");
+static Operator dummy_operator(IrOpcode::kParameter, Operator::kNoWrite,
+                               "dummy", 0, 0, 0, 0, 0, 0);
 
 TEST(TestScheduleAllocation) {
   HandleAndZoneScope scope;
   Schedule schedule(scope.main_zone());
 
-  CHECK_NE(NULL, schedule.entry());
-  CHECK_EQ(schedule.entry(), *(schedule.all_blocks().begin()));
+  CHECK_NE(NULL, schedule.start());
+  CHECK_EQ(schedule.start(), schedule.GetBlockById(BasicBlock::Id::FromInt(0)));
 }
 
 
 TEST(TestScheduleAddNode) {
   HandleAndZoneScope scope;
+  Schedule schedule(scope.main_zone());
   Graph graph(scope.main_zone());
   Node* n0 = graph.NewNode(&dummy_operator);
   Node* n1 = graph.NewNode(&dummy_operator);
 
-  Schedule schedule(scope.main_zone());
-
-  BasicBlock* entry = schedule.entry();
+  BasicBlock* entry = schedule.start();
   schedule.AddNode(entry, n0);
   schedule.AddNode(entry, n1);
 
@@ -51,50 +50,49 @@ TEST(TestScheduleAddNode) {
 
 TEST(TestScheduleAddGoto) {
   HandleAndZoneScope scope;
-
   Schedule schedule(scope.main_zone());
-  BasicBlock* entry = schedule.entry();
+
+  BasicBlock* entry = schedule.start();
   BasicBlock* next = schedule.NewBasicBlock();
 
   schedule.AddGoto(entry, next);
 
-  CHECK_EQ(0, entry->PredecessorCount());
-  CHECK_EQ(1, entry->SuccessorCount());
+  CHECK_EQ(0, static_cast<int>(entry->PredecessorCount()));
+  CHECK_EQ(1, static_cast<int>(entry->SuccessorCount()));
   CHECK_EQ(next, entry->SuccessorAt(0));
 
-  CHECK_EQ(1, next->PredecessorCount());
+  CHECK_EQ(1, static_cast<int>(next->PredecessorCount()));
   CHECK_EQ(entry, next->PredecessorAt(0));
-  CHECK_EQ(0, next->SuccessorCount());
+  CHECK_EQ(0, static_cast<int>(next->SuccessorCount()));
 }
 
 
 TEST(TestScheduleAddBranch) {
   HandleAndZoneScope scope;
   Schedule schedule(scope.main_zone());
-
-  BasicBlock* entry = schedule.entry();
-  BasicBlock* tblock = schedule.NewBasicBlock();
-  BasicBlock* fblock = schedule.NewBasicBlock();
-
   Graph graph(scope.main_zone());
   CommonOperatorBuilder common(scope.main_zone());
   Node* n0 = graph.NewNode(&dummy_operator);
   Node* b = graph.NewNode(common.Branch(), n0);
 
+  BasicBlock* entry = schedule.start();
+  BasicBlock* tblock = schedule.NewBasicBlock();
+  BasicBlock* fblock = schedule.NewBasicBlock();
+
   schedule.AddBranch(entry, b, tblock, fblock);
 
-  CHECK_EQ(0, entry->PredecessorCount());
-  CHECK_EQ(2, entry->SuccessorCount());
+  CHECK_EQ(0, static_cast<int>(entry->PredecessorCount()));
+  CHECK_EQ(2, static_cast<int>(entry->SuccessorCount()));
   CHECK_EQ(tblock, entry->SuccessorAt(0));
   CHECK_EQ(fblock, entry->SuccessorAt(1));
 
-  CHECK_EQ(1, tblock->PredecessorCount());
+  CHECK_EQ(1, static_cast<int>(tblock->PredecessorCount()));
   CHECK_EQ(entry, tblock->PredecessorAt(0));
-  CHECK_EQ(0, tblock->SuccessorCount());
+  CHECK_EQ(0, static_cast<int>(tblock->SuccessorCount()));
 
-  CHECK_EQ(1, fblock->PredecessorCount());
+  CHECK_EQ(1, static_cast<int>(fblock->PredecessorCount()));
   CHECK_EQ(entry, fblock->PredecessorAt(0));
-  CHECK_EQ(0, fblock->SuccessorCount());
+  CHECK_EQ(0, static_cast<int>(fblock->SuccessorCount()));
 }
 
 
@@ -103,12 +101,12 @@ TEST(TestScheduleAddReturn) {
   Schedule schedule(scope.main_zone());
   Graph graph(scope.main_zone());
   Node* n0 = graph.NewNode(&dummy_operator);
-  BasicBlock* entry = schedule.entry();
+  BasicBlock* entry = schedule.start();
   schedule.AddReturn(entry, n0);
 
-  CHECK_EQ(0, entry->PredecessorCount());
-  CHECK_EQ(1, entry->SuccessorCount());
-  CHECK_EQ(schedule.exit(), entry->SuccessorAt(0));
+  CHECK_EQ(0, static_cast<int>(entry->PredecessorCount()));
+  CHECK_EQ(1, static_cast<int>(entry->SuccessorCount()));
+  CHECK_EQ(schedule.end(), entry->SuccessorAt(0));
 }
 
 
@@ -117,26 +115,46 @@ TEST(TestScheduleAddThrow) {
   Schedule schedule(scope.main_zone());
   Graph graph(scope.main_zone());
   Node* n0 = graph.NewNode(&dummy_operator);
-  BasicBlock* entry = schedule.entry();
+  BasicBlock* entry = schedule.start();
   schedule.AddThrow(entry, n0);
 
-  CHECK_EQ(0, entry->PredecessorCount());
-  CHECK_EQ(1, entry->SuccessorCount());
-  CHECK_EQ(schedule.exit(), entry->SuccessorAt(0));
+  CHECK_EQ(0, static_cast<int>(entry->PredecessorCount()));
+  CHECK_EQ(1, static_cast<int>(entry->SuccessorCount()));
+  CHECK_EQ(schedule.end(), entry->SuccessorAt(0));
 }
 
 
-TEST(TestScheduleAddDeopt) {
+TEST(TestScheduleInsertBranch) {
   HandleAndZoneScope scope;
   Schedule schedule(scope.main_zone());
   Graph graph(scope.main_zone());
+  CommonOperatorBuilder common(scope.main_zone());
   Node* n0 = graph.NewNode(&dummy_operator);
-  BasicBlock* entry = schedule.entry();
-  schedule.AddDeoptimize(entry, n0);
+  Node* n1 = graph.NewNode(&dummy_operator);
+  Node* b = graph.NewNode(common.Branch(), n1);
 
-  CHECK_EQ(0, entry->PredecessorCount());
-  CHECK_EQ(1, entry->SuccessorCount());
-  CHECK_EQ(schedule.exit(), entry->SuccessorAt(0));
+  BasicBlock* entry = schedule.start();
+  BasicBlock* tblock = schedule.NewBasicBlock();
+  BasicBlock* fblock = schedule.NewBasicBlock();
+  BasicBlock* merge = schedule.NewBasicBlock();
+  schedule.AddReturn(entry, n0);
+  schedule.AddGoto(tblock, merge);
+  schedule.AddGoto(fblock, merge);
+
+  schedule.InsertBranch(entry, merge, b, tblock, fblock);
+
+  CHECK_EQ(0, static_cast<int>(entry->PredecessorCount()));
+  CHECK_EQ(2, static_cast<int>(entry->SuccessorCount()));
+  CHECK_EQ(tblock, entry->SuccessorAt(0));
+  CHECK_EQ(fblock, entry->SuccessorAt(1));
+
+  CHECK_EQ(2, static_cast<int>(merge->PredecessorCount()));
+  CHECK_EQ(1, static_cast<int>(merge->SuccessorCount()));
+  CHECK_EQ(schedule.end(), merge->SuccessorAt(0));
+
+  CHECK_EQ(1, static_cast<int>(schedule.end()->PredecessorCount()));
+  CHECK_EQ(0, static_cast<int>(schedule.end()->SuccessorCount()));
+  CHECK_EQ(merge, schedule.end()->PredecessorAt(0));
 }
 
 
@@ -145,7 +163,7 @@ TEST(BuildMulNodeGraph) {
   Schedule schedule(scope.main_zone());
   Graph graph(scope.main_zone());
   CommonOperatorBuilder common(scope.main_zone());
-  MachineOperatorBuilder machine(scope.main_zone(), kMachineWord32);
+  MachineOperatorBuilder machine;
 
   Node* start = graph.NewNode(common.Start(0));
   graph.SetStart(start);

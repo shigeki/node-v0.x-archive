@@ -2,7 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "src/compiler/access-builder.h"
 #include "src/compiler/graph-inl.h"
+#include "src/compiler/js-builtin-reducer.h"
 #include "src/compiler/js-typed-lowering.h"
 #include "src/compiler/node-aux-data-inl.h"
 #include "src/compiler/node-properties-inl.h"
@@ -17,40 +19,32 @@ namespace compiler {
 // - relax effects from generic but not-side-effecting operations
 // - relax effects for ToNumber(mixed)
 
-// Replace value uses of {node} with {value} and effect uses of {node} with
-// {effect}. If {effect == NULL}, then use the effect input to {node}.
-// TODO(titzer): move into a GraphEditor?
-static void ReplaceUses(Node* node, Node* value, Node* effect) {
-  if (value == effect) {
-    // Effect and value updates are the same; no special iteration needed.
-    if (value != node) node->ReplaceUses(value);
-    return;
-  }
-
-  if (effect == NULL) effect = NodeProperties::GetEffectInput(node);
-
-  // The iteration requires distinguishing between value and effect edges.
-  UseIter iter = node->uses().begin();
-  while (iter != node->uses().end()) {
-    if (NodeProperties::IsEffectEdge(iter.edge())) {
-      iter = iter.UpdateToAndIncrement(effect);
-    } else {
-      iter = iter.UpdateToAndIncrement(value);
-    }
-  }
-}
-
 
 // Relax the effects of {node} by immediately replacing effect uses of {node}
 // with the effect input to {node}.
 // TODO(turbofan): replace the effect input to {node} with {graph->start()}.
 // TODO(titzer): move into a GraphEditor?
-static void RelaxEffects(Node* node) { ReplaceUses(node, node, NULL); }
+static void RelaxEffects(Node* node) {
+  NodeProperties::ReplaceWithValue(node, node, NULL);
+}
+
+
+JSTypedLowering::JSTypedLowering(JSGraph* jsgraph)
+    : jsgraph_(jsgraph), simplified_(jsgraph->zone()) {
+  Factory* factory = zone()->isolate()->factory();
+  Handle<Object> zero = factory->NewNumber(0.0);
+  Handle<Object> one = factory->NewNumber(1.0);
+  zero_range_ = Type::Range(zero, zero, zone());
+  one_range_ = Type::Range(one, one, zone());
+}
+
+
+JSTypedLowering::~JSTypedLowering() {}
 
 
 Reduction JSTypedLowering::ReplaceEagerly(Node* old, Node* node) {
-  ReplaceUses(old, node, node);
-  return Reducer::Changed(node);
+  NodeProperties::ReplaceWithValue(old, node, node);
+  return Changed(node);
 }
 
 
@@ -99,14 +93,14 @@ class JSBinopReduction {
 
   // Remove all effect and control inputs and outputs to this node and change
   // to the pure operator {op}, possibly inserting a boolean inversion.
-  Reduction ChangeToPureOperator(Operator* op, bool invert = false) {
-    DCHECK_EQ(0, OperatorProperties::GetEffectInputCount(op));
+  Reduction ChangeToPureOperator(const Operator* op, bool invert = false) {
+    DCHECK_EQ(0, op->EffectInputCount());
     DCHECK_EQ(false, OperatorProperties::HasContextInput(op));
-    DCHECK_EQ(0, OperatorProperties::GetControlInputCount(op));
-    DCHECK_EQ(2, OperatorProperties::GetValueInputCount(op));
+    DCHECK_EQ(0, op->ControlInputCount());
+    DCHECK_EQ(2, op->ValueInputCount());
 
     // Remove the effects from the node, if any, and update its effect usages.
-    if (OperatorProperties::GetEffectInputCount(node_->op()) > 0) {
+    if (node_->op()->EffectInputCount() > 0) {
       RelaxEffects(node_);
     }
     // Remove the inputs corresponding to context, effect, and control.
@@ -179,7 +173,7 @@ class JSBinopReduction {
     return n;
   }
 
-  // Try to narrowing a double or number operation to an Int32 operation.
+  // Try narrowing a double or number operation to an Int32 operation.
   bool TryNarrowingToI32(Type* type, Node* node) {
     switch (node->opcode()) {
       case IrOpcode::kFloat64Add:
@@ -225,8 +219,8 @@ class JSBinopReduction {
 
     if (input_type->Is(type)) return node;  // already in the value range.
 
-    Operator* op = is_signed ? simplified()->NumberToInt32()
-                             : simplified()->NumberToUint32();
+    const Operator* op = is_signed ? simplified()->NumberToInt32()
+                                   : simplified()->NumberToUint32();
     Node* n = graph()->NewNode(op, node);
     return n;
   }
@@ -239,19 +233,83 @@ class JSBinopReduction {
 
 Reduction JSTypedLowering::ReduceJSAdd(Node* node) {
   JSBinopReduction r(this, node);
-  if (r.OneInputIs(Type::String())) {
-    r.ConvertInputsToString();
-    return r.ChangeToPureOperator(simplified()->StringAdd());
-  } else if (r.NeitherInputCanBe(Type::String())) {
+  if (r.BothInputsAre(Type::Number())) {
+    // JSAdd(x:number, y:number) => NumberAdd(x, y)
+    return r.ChangeToPureOperator(simplified()->NumberAdd());
+  }
+  Type* maybe_string = Type::Union(Type::String(), Type::Receiver(), zone());
+  if (r.BothInputsAre(Type::Primitive()) && r.NeitherInputCanBe(maybe_string)) {
+    // JSAdd(x:-string, y:-string) => NumberAdd(ToNumber(x), ToNumber(y))
     r.ConvertInputsToNumber();
     return r.ChangeToPureOperator(simplified()->NumberAdd());
+  }
+#if 0
+  // TODO(turbofan): General ToNumber disabled for now because:
+  //   a) The inserted ToNumber operation screws up observability of valueOf.
+  //   b) Deoptimization at ToNumber doesn't have corresponding bailout id.
+  Type* maybe_string = Type::Union(Type::String(), Type::Receiver(), zone());
+  if (r.NeitherInputCanBe(maybe_string)) {
+    ...
+  }
+#endif
+#if 0
+  // TODO(turbofan): Lowering of StringAdd is disabled for now because:
+  //   a) The inserted ToString operation screws up valueOf vs. toString order.
+  //   b) Deoptimization at ToString doesn't have corresponding bailout id.
+  //   c) Our current StringAddStub is actually non-pure and requires context.
+  if (r.OneInputIs(Type::String())) {
+    // JSAdd(x:string, y:string) => StringAdd(x, y)
+    // JSAdd(x:string, y) => StringAdd(x, ToString(y))
+    // JSAdd(x, y:string) => StringAdd(ToString(x), y)
+    r.ConvertInputsToString();
+    return r.ChangeToPureOperator(simplified()->StringAdd());
+  }
+#endif
+  return NoChange();
+}
+
+
+Reduction JSTypedLowering::ReduceJSBitwiseOr(Node* node) {
+  JSBinopReduction r(this, node);
+  if (r.BothInputsAre(Type::Primitive()) || r.OneInputIs(zero_range_)) {
+    // TODO(jarin): Propagate frame state input from non-primitive input node to
+    // JSToNumber node.
+    // TODO(titzer): some Smi bitwise operations don't really require going
+    // all the way to int32, which can save tagging/untagging for some
+    // operations
+    // on some platforms.
+    // TODO(turbofan): make this heuristic configurable for code size.
+    r.ConvertInputsToInt32(true, true);
+    return r.ChangeToPureOperator(machine()->Word32Or());
   }
   return NoChange();
 }
 
 
-Reduction JSTypedLowering::ReduceNumberBinop(Node* node, Operator* numberOp) {
+Reduction JSTypedLowering::ReduceJSMultiply(Node* node) {
   JSBinopReduction r(this, node);
+  if (r.BothInputsAre(Type::Primitive()) || r.OneInputIs(one_range_)) {
+    // TODO(jarin): Propagate frame state input from non-primitive input node to
+    // JSToNumber node.
+    r.ConvertInputsToNumber();
+    return r.ChangeToPureOperator(simplified()->NumberMultiply());
+  }
+  // TODO(turbofan): relax/remove the effects of this operator in other cases.
+  return NoChange();
+}
+
+
+Reduction JSTypedLowering::ReduceNumberBinop(Node* node,
+                                             const Operator* numberOp) {
+  JSBinopReduction r(this, node);
+  if (r.BothInputsAre(Type::Primitive())) {
+    r.ConvertInputsToNumber();
+    return r.ChangeToPureOperator(numberOp);
+  }
+#if 0
+  // TODO(turbofan): General ToNumber disabled for now because:
+  //   a) The inserted ToNumber operation screws up observability of valueOf.
+  //   b) Deoptimization at ToNumber doesn't have corresponding bailout id.
   if (r.OneInputIs(Type::Primitive())) {
     // If at least one input is a primitive, then insert appropriate conversions
     // to number and reduce this operator to the given numeric one.
@@ -259,28 +317,37 @@ Reduction JSTypedLowering::ReduceNumberBinop(Node* node, Operator* numberOp) {
     r.ConvertInputsToNumber();
     return r.ChangeToPureOperator(numberOp);
   }
+#endif
   // TODO(turbofan): relax/remove the effects of this operator in other cases.
   return NoChange();
 }
 
 
 Reduction JSTypedLowering::ReduceI32Binop(Node* node, bool left_signed,
-                                          bool right_signed, Operator* intOp) {
+                                          bool right_signed,
+                                          const Operator* intOp) {
   JSBinopReduction r(this, node);
-  // TODO(titzer): some Smi bitwise operations don't really require going
-  // all the way to int32, which can save tagging/untagging for some operations
-  // on some platforms.
-  // TODO(turbofan): make this heuristic configurable for code size.
-  r.ConvertInputsToInt32(left_signed, right_signed);
-  return r.ChangeToPureOperator(intOp);
+  if (r.BothInputsAre(Type::Primitive())) {
+    // TODO(titzer): some Smi bitwise operations don't really require going
+    // all the way to int32, which can save tagging/untagging for some
+    // operations
+    // on some platforms.
+    // TODO(turbofan): make this heuristic configurable for code size.
+    r.ConvertInputsToInt32(left_signed, right_signed);
+    return r.ChangeToPureOperator(intOp);
+  }
+  return NoChange();
 }
 
 
 Reduction JSTypedLowering::ReduceI32Shift(Node* node, bool left_signed,
-                                          Operator* shift_op) {
+                                          const Operator* shift_op) {
   JSBinopReduction r(this, node);
-  r.ConvertInputsForShift(left_signed);
-  return r.ChangeToPureOperator(shift_op);
+  if (r.BothInputsAre(Type::Primitive())) {
+    r.ConvertInputsForShift(left_signed);
+    return r.ChangeToPureOperator(shift_op);
+  }
+  return NoChange();
 }
 
 
@@ -288,7 +355,7 @@ Reduction JSTypedLowering::ReduceJSComparison(Node* node) {
   JSBinopReduction r(this, node);
   if (r.BothInputsAre(Type::String())) {
     // If both inputs are definitely strings, perform a string comparison.
-    Operator* stringOp;
+    const Operator* stringOp;
     switch (node->opcode()) {
       case IrOpcode::kJSLessThan:
         stringOp = simplified()->StringLessThan();
@@ -308,10 +375,21 @@ Reduction JSTypedLowering::ReduceJSComparison(Node* node) {
         return NoChange();
     }
     return r.ChangeToPureOperator(stringOp);
-  } else if (r.OneInputCannotBe(Type::String())) {
+  }
+#if 0
+  // TODO(turbofan): General ToNumber disabled for now because:
+  //   a) The inserted ToNumber operation screws up observability of valueOf.
+  //   b) Deoptimization at ToNumber doesn't have corresponding bailout id.
+  Type* maybe_string = Type::Union(Type::String(), Type::Receiver(), zone());
+  if (r.OneInputCannotBe(maybe_string)) {
     // If one input cannot be a string, then emit a number comparison.
-    Operator* less_than;
-    Operator* less_than_or_equal;
+    ...
+  }
+#endif
+  Type* maybe_string = Type::Union(Type::String(), Type::Receiver(), zone());
+  if (r.BothInputsAre(Type::Primitive()) && r.OneInputCannotBe(maybe_string)) {
+    const Operator* less_than;
+    const Operator* less_than_or_equal;
     if (r.BothInputsAre(Type::Unsigned32())) {
       less_than = machine()->Uint32LessThan();
       less_than_or_equal = machine()->Uint32LessThanOrEqual();
@@ -324,7 +402,7 @@ Reduction JSTypedLowering::ReduceJSComparison(Node* node) {
       less_than = simplified()->NumberLessThan();
       less_than_or_equal = simplified()->NumberLessThanOrEqual();
     }
-    Operator* comparison;
+    const Operator* comparison;
     switch (node->opcode()) {
       case IrOpcode::kJSLessThan:
         comparison = less_than;
@@ -379,14 +457,6 @@ Reduction JSTypedLowering::ReduceJSStrictEqual(Node* node, bool invert) {
                                          : jsgraph()->TrueConstant());
     }
   }
-  if (!r.left_type()->Maybe(r.right_type())) {
-    // Type intersection is empty; === is always false unless both
-    // inputs could be strings (one internalized and one not).
-    if (r.OneInputCannotBe(Type::String())) {
-      return ReplaceEagerly(node, invert ? jsgraph()->TrueConstant()
-                                         : jsgraph()->FalseConstant());
-    }
-  }
   if (r.OneInputIs(Type::Undefined())) {
     return r.ChangeToPureOperator(
         simplified()->ReferenceEqual(Type::Undefined()), invert);
@@ -430,7 +500,7 @@ Reduction JSTypedLowering::ReduceJSToNumberInput(Node* input) {
   }
   Type* input_type = NodeProperties::GetBounds(input).upper;
   if (input_type->Is(Type::Number())) {
-    // JSToNumber(number) => x
+    // JSToNumber(x:number) => x
     return Changed(input);
   }
   if (input_type->Is(Type::Undefined())) {
@@ -441,8 +511,12 @@ Reduction JSTypedLowering::ReduceJSToNumberInput(Node* input) {
     // JSToNumber(null) => #0
     return ReplaceWith(jsgraph()->ZeroConstant());
   }
-  // TODO(turbofan): js-typed-lowering of ToNumber(boolean)
-  // TODO(turbofan): js-typed-lowering of ToNumber(string)
+  if (input_type->Is(Type::Boolean())) {
+    // JSToNumber(x:boolean) => BooleanToNumber(x)
+    return ReplaceWith(
+        graph()->NewNode(simplified()->BooleanToNumber(), input));
+  }
+  // TODO(turbofan): js-typed-lowering of ToNumber(x:string)
   return NoChange();
 }
 
@@ -459,7 +533,7 @@ Reduction JSTypedLowering::ReduceJSToStringInput(Node* input) {
   }
   Type* input_type = NodeProperties::GetBounds(input).upper;
   if (input_type->Is(Type::String())) {
-    return Changed(input);  // JSToString(string) => x
+    return Changed(input);  // JSToString(x:string) => x
   }
   if (input_type->Is(Type::Undefined())) {
     return ReplaceWith(jsgraph()->HeapConstant(
@@ -469,8 +543,8 @@ Reduction JSTypedLowering::ReduceJSToStringInput(Node* input) {
     return ReplaceWith(jsgraph()->HeapConstant(
         graph()->zone()->isolate()->factory()->null_string()));
   }
-  // TODO(turbofan): js-typed-lowering of ToString(boolean)
-  // TODO(turbofan): js-typed-lowering of ToString(number)
+  // TODO(turbofan): js-typed-lowering of ToString(x:boolean)
+  // TODO(turbofan): js-typed-lowering of ToString(x:number)
   return NoChange();
 }
 
@@ -487,7 +561,7 @@ Reduction JSTypedLowering::ReduceJSToBooleanInput(Node* input) {
   }
   Type* input_type = NodeProperties::GetBounds(input).upper;
   if (input_type->Is(Type::Boolean())) {
-    return Changed(input);  // JSToBoolean(boolean) => x
+    return Changed(input);  // JSToBoolean(x:boolean) => x
   }
   if (input_type->Is(Type::Undefined())) {
     // JSToBoolean(undefined) => #false
@@ -498,31 +572,139 @@ Reduction JSTypedLowering::ReduceJSToBooleanInput(Node* input) {
     return ReplaceWith(jsgraph()->FalseConstant());
   }
   if (input_type->Is(Type::DetectableReceiver())) {
-    // JSToBoolean(detectable) => #true
+    // JSToBoolean(x:detectable) => #true
     return ReplaceWith(jsgraph()->TrueConstant());
   }
   if (input_type->Is(Type::Undetectable())) {
-    // JSToBoolean(undetectable) => #false
+    // JSToBoolean(x:undetectable) => #false
     return ReplaceWith(jsgraph()->FalseConstant());
   }
-  if (input_type->Is(Type::Number())) {
-    // JSToBoolean(number) => BooleanNot(NumberEqual(x, #0))
+  if (input_type->Is(Type::OrderedNumber())) {
+    // JSToBoolean(x:ordered-number) => BooleanNot(NumberEqual(x, #0))
     Node* cmp = graph()->NewNode(simplified()->NumberEqual(), input,
                                  jsgraph()->ZeroConstant());
     Node* inv = graph()->NewNode(simplified()->BooleanNot(), cmp);
-    ReplaceEagerly(input, inv);
-    // TODO(titzer): Ugly. ReplaceEagerly smashes all uses. Smash it back here.
-    cmp->ReplaceInput(0, input);
-    return Changed(inv);
+    return ReplaceWith(inv);
   }
-  // TODO(turbofan): js-typed-lowering of ToBoolean(string)
+  if (input_type->Is(Type::String())) {
+    // JSToBoolean(x:string) => BooleanNot(NumberEqual(x.length, #0))
+    FieldAccess access = AccessBuilder::ForStringLength();
+    Node* length = graph()->NewNode(simplified()->LoadField(access), input,
+                                    graph()->start(), graph()->start());
+    Node* cmp = graph()->NewNode(simplified()->NumberEqual(), length,
+                                 jsgraph()->ZeroConstant());
+    Node* inv = graph()->NewNode(simplified()->BooleanNot(), cmp);
+    return ReplaceWith(inv);
+  }
+  // TODO(turbofan): We need some kinda of PrimitiveToBoolean simplified
+  // operator, then we can do the pushing in the SimplifiedOperatorReducer
+  // and do not need to protect against stack overflow (because of backedges
+  // in phis) below.
+  if (input->opcode() == IrOpcode::kPhi &&
+      input_type->Is(
+          Type::Union(Type::Boolean(), Type::OrderedNumber(), zone()))) {
+    // JSToBoolean(phi(x1,...,xn):ordered-number|boolean)
+    //   => phi(JSToBoolean(x1),...,JSToBoolean(xn))
+    int input_count = input->InputCount() - 1;
+    Node** inputs = zone()->NewArray<Node*>(input_count + 1);
+    for (int i = 0; i < input_count; ++i) {
+      Node* value = input->InputAt(i);
+      Type* value_type = NodeProperties::GetBounds(value).upper;
+      // Recursively try to reduce the value first.
+      Reduction result = (value_type->Is(Type::Boolean()) ||
+                          value_type->Is(Type::OrderedNumber()))
+                             ? ReduceJSToBooleanInput(value)
+                             : NoChange();
+      if (result.Changed()) {
+        inputs[i] = result.replacement();
+      } else {
+        inputs[i] = graph()->NewNode(javascript()->ToBoolean(), value,
+                                     jsgraph()->ZeroConstant(),
+                                     graph()->start(), graph()->start());
+      }
+    }
+    inputs[input_count] = input->InputAt(input_count);
+    Node* phi = graph()->NewNode(common()->Phi(kMachAnyTagged, input_count),
+                                 input_count + 1, inputs);
+    return ReplaceWith(phi);
+  }
+  return NoChange();
+}
+
+
+Reduction JSTypedLowering::ReduceJSLoadProperty(Node* node) {
+  Node* key = NodeProperties::GetValueInput(node, 1);
+  Node* base = NodeProperties::GetValueInput(node, 0);
+  Type* key_type = NodeProperties::GetBounds(key).upper;
+  Type* base_type = NodeProperties::GetBounds(base).upper;
+  // TODO(mstarzinger): This lowering is not correct if:
+  //   a) The typed array or it's buffer is neutered.
+  if (base_type->IsConstant() && key_type->Is(Type::Integral32()) &&
+      base_type->AsConstant()->Value()->IsJSTypedArray()) {
+    // JSLoadProperty(typed-array, int32)
+    Handle<JSTypedArray> array =
+        Handle<JSTypedArray>::cast(base_type->AsConstant()->Value());
+    if (IsExternalArrayElementsKind(array->map()->elements_kind())) {
+      ExternalArrayType type = array->type();
+      double byte_length = array->byte_length()->Number();
+      if (byte_length <= kMaxInt) {
+        Handle<ExternalArray> elements =
+            Handle<ExternalArray>::cast(handle(array->elements()));
+        Node* pointer = jsgraph()->IntPtrConstant(
+            bit_cast<intptr_t>(elements->external_pointer()));
+        Node* length = jsgraph()->Constant(array->length()->Number());
+        Node* effect = NodeProperties::GetEffectInput(node);
+        Node* load = graph()->NewNode(
+            simplified()->LoadElement(
+                AccessBuilder::ForTypedArrayElement(type, true)),
+            pointer, key, length, effect);
+        return ReplaceEagerly(node, load);
+      }
+    }
+  }
+  return NoChange();
+}
+
+
+Reduction JSTypedLowering::ReduceJSStoreProperty(Node* node) {
+  Node* key = NodeProperties::GetValueInput(node, 1);
+  Node* base = NodeProperties::GetValueInput(node, 0);
+  Node* value = NodeProperties::GetValueInput(node, 2);
+  Type* key_type = NodeProperties::GetBounds(key).upper;
+  Type* base_type = NodeProperties::GetBounds(base).upper;
+  // TODO(mstarzinger): This lowering is not correct if:
+  //   a) The typed array or its buffer is neutered.
+  if (key_type->Is(Type::Integral32()) && base_type->IsConstant() &&
+      base_type->AsConstant()->Value()->IsJSTypedArray()) {
+    // JSStoreProperty(typed-array, int32, value)
+    Handle<JSTypedArray> array =
+        Handle<JSTypedArray>::cast(base_type->AsConstant()->Value());
+    if (IsExternalArrayElementsKind(array->map()->elements_kind())) {
+      ExternalArrayType type = array->type();
+      double byte_length = array->byte_length()->Number();
+      if (byte_length <= kMaxInt) {
+        Handle<ExternalArray> elements =
+            Handle<ExternalArray>::cast(handle(array->elements()));
+        Node* pointer = jsgraph()->IntPtrConstant(
+            bit_cast<intptr_t>(elements->external_pointer()));
+        Node* length = jsgraph()->Constant(array->length()->Number());
+        Node* effect = NodeProperties::GetEffectInput(node);
+        Node* control = NodeProperties::GetControlInput(node);
+        Node* store = graph()->NewNode(
+            simplified()->StoreElement(
+                AccessBuilder::ForTypedArrayElement(type, true)),
+            pointer, key, length, value, effect, control);
+        return ReplaceEagerly(node, store);
+      }
+    }
+  }
   return NoChange();
 }
 
 
 static Reduction ReplaceWithReduction(Node* node, Reduction reduction) {
   if (reduction.Changed()) {
-    ReplaceUses(node, reduction.replacement(), NULL);
+    NodeProperties::ReplaceWithValue(node, reduction.replacement());
     return reduction;
   }
   return Reducer::NoChange();
@@ -530,6 +712,16 @@ static Reduction ReplaceWithReduction(Node* node, Reduction reduction) {
 
 
 Reduction JSTypedLowering::Reduce(Node* node) {
+  // Check if the output type is a singleton.  In that case we already know the
+  // result value and can simply replace the node unless there are effects.
+  if (NodeProperties::IsTyped(node) &&
+      NodeProperties::GetBounds(node).upper->IsConstant() &&
+      !IrOpcode::IsLeafOpcode(node->opcode()) &&
+      node->op()->EffectOutputCount() == 0) {
+    return ReplaceEagerly(node, jsgraph()->Constant(
+        NodeProperties::GetBounds(node).upper->AsConstant()->Value()));
+    // TODO(neis): Extend this to Range(x,x), NaN, MinusZero, ...?
+  }
   switch (node->opcode()) {
     case IrOpcode::kJSEqual:
       return ReduceJSEqual(node, false);
@@ -545,7 +737,7 @@ Reduction JSTypedLowering::Reduce(Node* node) {
     case IrOpcode::kJSGreaterThanOrEqual:
       return ReduceJSComparison(node);
     case IrOpcode::kJSBitwiseOr:
-      return ReduceI32Binop(node, true, true, machine()->Word32Or());
+      return ReduceJSBitwiseOr(node);
     case IrOpcode::kJSBitwiseXor:
       return ReduceI32Binop(node, true, true, machine()->Word32Xor());
     case IrOpcode::kJSBitwiseAnd:
@@ -561,7 +753,7 @@ Reduction JSTypedLowering::Reduce(Node* node) {
     case IrOpcode::kJSSubtract:
       return ReduceNumberBinop(node, simplified()->NumberSubtract());
     case IrOpcode::kJSMultiply:
-      return ReduceNumberBinop(node, simplified()->NumberMultiply());
+      return ReduceJSMultiply(node);
     case IrOpcode::kJSDivide:
       return ReduceNumberBinop(node, simplified()->NumberDivide());
     case IrOpcode::kJSModulus:
@@ -570,19 +762,19 @@ Reduction JSTypedLowering::Reduce(Node* node) {
       Reduction result = ReduceJSToBooleanInput(node->InputAt(0));
       Node* value;
       if (result.Changed()) {
-        // !x => BooleanNot(x)
+        // JSUnaryNot(x:boolean) => BooleanNot(x)
         value =
             graph()->NewNode(simplified()->BooleanNot(), result.replacement());
-        ReplaceUses(node, value, NULL);
+        NodeProperties::ReplaceWithValue(node, value);
         return Changed(value);
       } else {
-        // !x => BooleanNot(JSToBoolean(x))
+        // JSUnaryNot(x) => BooleanNot(JSToBoolean(x))
         value = graph()->NewNode(simplified()->BooleanNot(), node);
         node->set_op(javascript()->ToBoolean());
-        ReplaceUses(node, value, node);
+        NodeProperties::ReplaceWithValue(node, value, node);
         // Note: ReplaceUses() smashes all uses, so smash it back here.
         value->ReplaceInput(0, node);
-        return ReplaceWith(value);
+        return Changed(node);
       }
     }
     case IrOpcode::kJSToBoolean:
@@ -594,11 +786,18 @@ Reduction JSTypedLowering::Reduce(Node* node) {
     case IrOpcode::kJSToString:
       return ReplaceWithReduction(node,
                                   ReduceJSToStringInput(node->InputAt(0)));
+    case IrOpcode::kJSLoadProperty:
+      return ReduceJSLoadProperty(node);
+    case IrOpcode::kJSStoreProperty:
+      return ReduceJSStoreProperty(node);
+    case IrOpcode::kJSCallFunction:
+      return JSBuiltinReducer(jsgraph()).Reduce(node);
     default:
       break;
   }
   return NoChange();
 }
-}
-}
-}  // namespace v8::internal::compiler
+
+}  // namespace compiler
+}  // namespace internal
+}  // namespace v8

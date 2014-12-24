@@ -31,7 +31,7 @@ parser.add_option('--debug',
 parser.add_option('--dest-cpu',
     action='store',
     dest='dest_cpu',
-    help='CPU architecture to build for. Valid values are: arm, ia32, x64')
+    help='CPU architecture to build for. Valid values are: arm, ia32, x32, x64')
 
 parser.add_option('--dest-os',
     action='store',
@@ -82,26 +82,6 @@ parser.add_option('--openssl-use-sys',
     action='store_true',
     dest='shared_openssl',
     help=optparse.SUPPRESS_HELP)
-
-parser.add_option('--shared-cares',
-    action='store_true',
-    dest='shared_cares',
-    help='link to a shared cares DLL instead of static linking')
-
-parser.add_option('--shared-cares-includes',
-    action='store',
-    dest='shared_cares_includes',
-    help='directory containing cares header files')
-
-parser.add_option('--shared-cares-libname',
-    action='store',
-    dest='shared_cares_libname',
-    help='alternative lib name to link to (default: \'cares\')')
-
-parser.add_option('--shared-cares-libpath',
-    action='store',
-    dest='shared_cares_libpath',
-    help='a directory to search for the shared cares DLL')
 
 parser.add_option('--shared-http-parser',
     action='store_true',
@@ -376,28 +356,8 @@ def is_arm_hard_float_abi():
   # the Floating Point ABI used (PCS stands for Procedure Call Standard).
   # We use these as well as a couple of other defines to statically determine
   # what FP ABI used.
-  # GCC versions 4.4 and below don't support hard-fp.
-  # GCC versions 4.5 may support hard-fp without defining __ARM_PCS or
-  # __ARM_PCS_VFP.
 
-  if compiler_version() >= (4, 6, 0):
-    return '__ARM_PCS_VFP' in cc_macros()
-  elif compiler_version() < (4, 5, 0):
-    return False
-  elif '__ARM_PCS_VFP' in cc_macros():
-    return True
-  elif ('__ARM_PCS' in cc_macros() or
-        '__SOFTFP' in cc_macros() or
-        not '__VFP_FP__' in cc_macros()):
-    return False
-  else:
-    print '''Node.js configure error: Your version of GCC does not report
-      the Floating-Point ABI to compile for your hardware
-
-      Please manually specify which floating-point ABI to use with the
-      --with-arm-float-abi option.
-      '''
-    sys.exit()
+  return '__ARM_PCS_VFP' in cc_macros()
 
 
 def host_arch_cc():
@@ -436,22 +396,6 @@ def host_arch_win():
   }
 
   return matchup.get(arch, 'ia32')
-
-
-def compiler_version():
-  try:
-    proc = subprocess.Popen(shlex.split(CC) + ['--version'],
-                            stdout=subprocess.PIPE)
-  except WindowsError:
-    return (0, False)
-
-  is_clang = 'clang' in proc.communicate()[0].split('\n')[0]
-
-  proc = subprocess.Popen(shlex.split(CC) + ['-dumpversion'],
-                          stdout=subprocess.PIPE)
-  version = tuple(map(int, proc.communicate()[0].split('.')))
-
-  return (version, is_clang)
 
 
 def configure_arm(o):
@@ -494,16 +438,6 @@ def configure_node(o):
 
   if target_arch == 'arm':
     configure_arm(o)
-
-  cc_version, is_clang = compiler_version()
-  o['variables']['clang'] = 1 if is_clang else 0
-
-  if not is_clang and cc_version != 0:
-    o['variables']['gcc_version'] = 10 * cc_version[0] + cc_version[1]
-
-  # clang has always supported -fvisibility=hidden, right?
-  if not is_clang and cc_version < (4,0,0):
-    o['variables']['visibility'] = ''
 
   if flavor in ('solaris', 'mac', 'linux', 'freebsd'):
     use_dtrace = not options.without_dtrace
@@ -584,20 +518,6 @@ def configure_http_parser(o):
         o['libraries'] += ['-lhttp_parser']
     if options.shared_http_parser_includes:
         o['include_dirs'] += [options.shared_http_parser_includes]
-
-
-def configure_cares(o):
-    o['variables']['node_shared_cares'] = b(options.shared_cares)
-
-    # assume shared cares if one of these is set?
-    if options.shared_cares_libpath:
-        o['libraries'] += ['-L%s' % options.shared_cares_libpath]
-    if options.shared_cares_libname:
-        o['libraries'] += ['-l%s' % options.shared_cares_libname]
-    elif options.shared_cares:
-        o['libraries'] += ['-lcares']
-    if options.shared_cares_includes:
-        o['include_dirs'] += [options.shared_cares_includes]
 
 
 def configure_libuv(o):
@@ -863,7 +783,6 @@ output = {
 configure_node(output)
 configure_libz(output)
 configure_http_parser(output)
-configure_cares(output)
 configure_libuv(output)
 configure_v8(output)
 configure_openssl(output)
@@ -905,11 +824,11 @@ if options.use_ninja:
   gyp_args += ['-f', 'ninja-' + flavor]
 elif options.use_xcode:
   gyp_args += ['-f', 'xcode']
-elif flavor == 'win':
+elif flavor == 'win' and sys.platform != 'msys':
   gyp_args += ['-f', 'msvs', '-G', 'msvs_version=auto']
 else:
   gyp_args += ['-f', 'make-' + flavor]
 
 gyp_args += args
 
-subprocess.call(gyp_args)
+sys.exit(subprocess.call(gyp_args))

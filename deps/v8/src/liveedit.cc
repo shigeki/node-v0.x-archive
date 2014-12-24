@@ -605,13 +605,9 @@ static int GetArrayLength(Handle<JSArray> array) {
 }
 
 
-void FunctionInfoWrapper::SetInitialProperties(Handle<String> name,
-                                               int start_position,
-                                               int end_position,
-                                               int param_num,
-                                               int literal_count,
-                                               int slot_count,
-                                               int parent_index) {
+void FunctionInfoWrapper::SetInitialProperties(
+    Handle<String> name, int start_position, int end_position, int param_num,
+    int literal_count, int slot_count, int ic_slot_count, int parent_index) {
   HandleScope scope(isolate());
   this->SetField(kFunctionNameOffset_, name);
   this->SetSmiValueField(kStartPositionOffset_, start_position);
@@ -619,6 +615,7 @@ void FunctionInfoWrapper::SetInitialProperties(Handle<String> name,
   this->SetSmiValueField(kParamNumOffset_, param_num);
   this->SetSmiValueField(kLiteralNumOffset_, literal_count);
   this->SetSmiValueField(kSlotNumOffset_, slot_count);
+  this->SetSmiValueField(kICSlotNumOffset_, ic_slot_count);
   this->SetSmiValueField(kParentIndexOffset_, parent_index);
 }
 
@@ -649,21 +646,24 @@ Handle<Code> FunctionInfoWrapper::GetFunctionCode() {
 }
 
 
-Handle<FixedArray> FunctionInfoWrapper::GetFeedbackVector() {
+Handle<TypeFeedbackVector> FunctionInfoWrapper::GetFeedbackVector() {
   Handle<Object> element = this->GetField(kSharedFunctionInfoOffset_);
-  Handle<FixedArray> result;
+  Handle<TypeFeedbackVector> result;
   if (element->IsJSValue()) {
     Handle<JSValue> value_wrapper = Handle<JSValue>::cast(element);
     Handle<Object> raw_result = UnwrapJSValue(value_wrapper);
     Handle<SharedFunctionInfo> shared =
         Handle<SharedFunctionInfo>::cast(raw_result);
-    result = Handle<FixedArray>(shared->feedback_vector(), isolate());
-    CHECK_EQ(result->length(), GetSlotCount());
+    result = Handle<TypeFeedbackVector>(shared->feedback_vector(), isolate());
+    CHECK_EQ(result->Slots(), GetSlotCount());
+    CHECK_EQ(result->ICSlots(), GetICSlotCount());
   } else {
     // Scripts may never have a SharedFunctionInfo created, so
     // create a type feedback vector here.
     int slot_count = GetSlotCount();
-    result = isolate()->factory()->NewTypeFeedbackVector(slot_count);
+    int ic_slot_count = GetICSlotCount();
+    result =
+        isolate()->factory()->NewTypeFeedbackVector(slot_count, ic_slot_count);
   }
   return result;
 }
@@ -706,11 +706,10 @@ class FunctionInfoListener {
   void FunctionStarted(FunctionLiteral* fun) {
     HandleScope scope(isolate());
     FunctionInfoWrapper info = FunctionInfoWrapper::Create(isolate());
-    info.SetInitialProperties(fun->name(), fun->start_position(),
-                              fun->end_position(), fun->parameter_count(),
-                              fun->materialized_literal_count(),
-                              fun->slot_count(),
-                              current_parent_index_);
+    info.SetInitialProperties(
+        fun->name(), fun->start_position(), fun->end_position(),
+        fun->parameter_count(), fun->materialized_literal_count(),
+        fun->slot_count(), fun->ic_slot_count(), current_parent_index_);
     current_parent_index_ = len_;
     SetElementSloppy(result_, len_, info.GetJSArray());
     len_++;
@@ -875,11 +874,11 @@ MaybeHandle<JSArray> LiveEdit::GatherCompileInfo(Handle<Script> script,
 
       Factory* factory = isolate->factory();
       Handle<String> start_pos_key = factory->InternalizeOneByteString(
-          STATIC_ASCII_VECTOR("startPosition"));
-      Handle<String> end_pos_key = factory->InternalizeOneByteString(
-          STATIC_ASCII_VECTOR("endPosition"));
-      Handle<String> script_obj_key = factory->InternalizeOneByteString(
-          STATIC_ASCII_VECTOR("scriptObject"));
+          STATIC_CHAR_VECTOR("startPosition"));
+      Handle<String> end_pos_key =
+          factory->InternalizeOneByteString(STATIC_CHAR_VECTOR("endPosition"));
+      Handle<String> script_obj_key =
+          factory->InternalizeOneByteString(STATIC_CHAR_VECTOR("scriptObject"));
       Handle<Smi> start_pos(
           Smi::FromInt(message_location.start_pos()), isolate);
       Handle<Smi> end_pos(Smi::FromInt(message_location.end_pos()), isolate);
@@ -1203,7 +1202,7 @@ void LiveEdit::ReplaceFunctionCode(
     }
     shared_info->DisableOptimization(kLiveEdit);
     // Update the type feedback vector
-    Handle<FixedArray> feedback_vector =
+    Handle<TypeFeedbackVector> feedback_vector =
         compile_info_wrapper.GetFeedbackVector();
     shared_info->set_feedback_vector(*feedback_vector);
   }
