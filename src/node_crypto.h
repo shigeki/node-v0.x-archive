@@ -62,6 +62,7 @@ class SecureContext : ObjectWrap {
   SSL_CTX *ctx_;
   // TODO: ca_store_ should probably be removed, it's not used anywhere.
   X509_STORE *ca_store_;
+  X509_VERIFY_PARAM *param_;
 
  protected:
   static const int kMaxSessionSize = 10 * 1024;
@@ -88,6 +89,7 @@ class SecureContext : ObjectWrap {
   SecureContext() : ObjectWrap() {
     ctx_ = NULL;
     ca_store_ = NULL;
+    param_ = X509_VERIFY_PARAM_new();
   }
 
   void FreeCTXMem() {
@@ -102,6 +104,7 @@ class SecureContext : ObjectWrap {
       SSL_CTX_free(ctx_);
       ctx_ = NULL;
       ca_store_ = NULL;
+      X509_VERIFY_PARAM_free(param_);
     } else {
       assert(ca_store_ == NULL);
     }

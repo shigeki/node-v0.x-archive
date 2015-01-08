@@ -311,6 +311,8 @@ Handle<Value> SecureContext::Init(const Arguments& args) {
   SSL_CTX_sess_set_get_cb(sc->ctx_, GetSessionCallback);
   SSL_CTX_sess_set_new_cb(sc->ctx_, NewSessionCallback);
 
+  X509_VERIFY_PARAM_set_flags(sc->param_, X509_V_FLAG_TRUSTED_FIRST);
+  SSL_CTX_set1_param(sc->ctx_, sc->param_);
   sc->ca_store_ = NULL;
   return True();
 }
@@ -802,7 +804,7 @@ size_t ClientHelloParser::Write(const uint8_t* data, size_t len) {
   HandleScope scope;
 
   assert(state_ != kEnded);
-  
+
   // Just accumulate data, everything will be pushed to BIO later
   if (state_ == kPaused) return 0;
 
