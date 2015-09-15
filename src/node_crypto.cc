@@ -699,6 +699,7 @@ void SecureContext::AddCRL(const FunctionCallbackInfo<Value>& args) {
 
 
 void SecureContext::AddRootCerts(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
   SecureContext* sc = Unwrap<SecureContext>(args.Holder());
   ClearErrorOnReturn clear_error_on_return;
   (void) &clear_error_on_return;  // Silence compiler warning.
@@ -708,25 +709,38 @@ void SecureContext::AddRootCerts(const FunctionCallbackInfo<Value>& args) {
   if (!root_cert_store) {
     root_cert_store = X509_STORE_new();
 
-    for (size_t i = 0; i < ARRAY_SIZE(root_certs); i++) {
-      BIO* bp = NodeBIO::New();
+    if(args[0]->IsArray()) {
+      Local<Array> x509_list = args[0].As<Array>();
+      uint32_t x509_list_length = x509_list->Length();
+      for (uint32_t i = 0; i < x509_list_length; i++) {
+        X509* x509 = LoadX509(env, args[0]);
+        if (!x509)
+          return;
 
-      if (!BIO_write(bp, root_certs[i], strlen(root_certs[i]))) {
-        BIO_free_all(bp);
-        return;
+        X509_STORE_add_cert(root_cert_store, x509);
+        X509_free(x509);
       }
+    } else {
+      for (size_t i = 0; i < ARRAY_SIZE(root_certs); i++) {
+        BIO* bp = NodeBIO::New();
 
-      X509 *x509 = PEM_read_bio_X509(bp, nullptr, CryptoPemCallback, nullptr);
+        if (!BIO_write(bp, root_certs[i], strlen(root_certs[i]))) {
+          BIO_free_all(bp);
+          return;
+        }
 
-      if (x509 == nullptr) {
+        X509 *x509 = PEM_read_bio_X509(bp, nullptr, CryptoPemCallback, nullptr);
+
+        if (x509 == nullptr) {
+          BIO_free_all(bp);
+          return;
+        }
+
+        X509_STORE_add_cert(root_cert_store, x509);
+
         BIO_free_all(bp);
-        return;
+        X509_free(x509);
       }
-
-      X509_STORE_add_cert(root_cert_store, x509);
-
-      BIO_free_all(bp);
-      X509_free(x509);
     }
   }
 
